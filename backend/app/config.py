@@ -1,8 +1,10 @@
 """Application configuration using Pydantic Settings."""
 
+import secrets
 from functools import lru_cache
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,11 +20,11 @@ class Settings(BaseSettings):
     # Application
     app_env: str = "development"
     app_debug: bool = False
-    secret_key: str = "change-me-in-production"
+    secret_key: str = ""  # Required - no insecure default
     api_url: str = "http://localhost:8000"
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/codeproof"
+    database_url: str = ""  # Required - no insecure default
     database_pool_size: int = 10
 
     # Redis
@@ -50,9 +52,31 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
 
     # JWT
-    jwt_secret: str = "change-me-in-production"
+    jwt_secret: str = ""  # Required - no insecure default
     jwt_algorithm: str = "HS256"
     jwt_expiry_hours: int = 24
+
+    @field_validator("secret_key", "jwt_secret", mode="after")
+    @classmethod
+    def validate_secrets(cls, v: str, info) -> str:
+        """Ensure secrets are set and not using insecure defaults."""
+        insecure_values = {"", "change-me-in-production", "secret", "password"}
+        if v.lower() in insecure_values:
+            raise ValueError(
+                f"{info.field_name} must be set to a secure value via environment variable. "
+                f"Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            )
+        if len(v) < 32:
+            raise ValueError(f"{info.field_name} must be at least 32 characters long")
+        return v
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def validate_database_url(cls, v: str) -> str:
+        """Ensure database URL is set."""
+        if not v:
+            raise ValueError("database_url must be set via DATABASE_URL environment variable")
+        return v
 
     # Stripe
     stripe_secret_key: str = ""

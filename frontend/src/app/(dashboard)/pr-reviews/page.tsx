@@ -61,11 +61,11 @@ const prReviews = [
         endLine: 45,
         evidence: {
           snippet: `'stripe' => [
-    'key' => 'sk_live_51ABC123xyz789...',
+    'key' => 'sk_live_EXAMPLE_DO_NOT_USE_xxxx',
     'secret' => env('STRIPE_SECRET'),
 ],`,
           pattern: "sk_live_[a-zA-Z0-9]{24,}",
-          match: "sk_live_51ABC123xyz789...",
+          match: "sk_live_EXAMPLE_[REDACTED]",
           reason: "Stripe Live API Key exposed in configuration file",
           confidence: "exact_match",
         },

@@ -13,6 +13,7 @@ import {
   Webhook,
   Save,
   Check,
+  AlertCircle,
 } from "lucide-react";
 import { PageContainer } from "@/components/layout/dashboard-layout";
 import { PageHeader } from "@/components/layout/header";
@@ -25,12 +26,80 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 
+// Validation helpers
+const validators = {
+  email: (value: string) => {
+    if (!value) return "Email is required";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return "Invalid email format";
+    if (value.length > 254) return "Email is too long";
+    return null;
+  },
+  name: (value: string) => {
+    if (!value.trim()) return "Name is required";
+    if (value.length < 2) return "Name must be at least 2 characters";
+    if (value.length > 100) return "Name is too long";
+    return null;
+  },
+  url: (value: string) => {
+    if (!value) return null; // Optional
+    try {
+      const url = new URL(value);
+      if (!["http:", "https:"].includes(url.protocol)) {
+        return "URL must use HTTP or HTTPS";
+      }
+    } catch {
+      return "Invalid URL format";
+    }
+    return null;
+  },
+  webhookSecret: (value: string) => {
+    if (!value) return null; // Optional
+    if (value.length < 16) return "Secret should be at least 16 characters for security";
+    return null;
+  },
+};
+
+interface FormErrors {
+  name?: string | null;
+  email?: string | null;
+  webhookUrl?: string | null;
+  webhookSecret?: string | null;
+}
+
 export default function SettingsPage() {
   const [saved, setSaved] = React.useState(false);
+  const [formData, setFormData] = React.useState({
+    name: "John Doe",
+    email: "john@example.com",
+    company: "Acme Inc",
+    webhookUrl: "",
+    webhookSecret: "",
+  });
+  const [errors, setErrors] = React.useState<FormErrors>({});
+
+  const validateForm = (): boolean => {
+    const newErrors: FormErrors = {
+      name: validators.name(formData.name),
+      email: validators.email(formData.email),
+      webhookUrl: validators.url(formData.webhookUrl),
+      webhookSecret: validators.webhookSecret(formData.webhookSecret),
+    };
+    setErrors(newErrors);
+    return !Object.values(newErrors).some(Boolean);
+  };
 
   const handleSave = () => {
+    if (!validateForm()) return;
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleInputChange = (field: keyof typeof formData, value: string) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
+    // Clear error on change
+    if (errors[field as keyof FormErrors]) {
+      setErrors((prev) => ({ ...prev, [field]: null }));
+    }
   };
 
   return (
@@ -89,11 +158,34 @@ export default function SettingsPage() {
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Name</label>
-                    <Input defaultValue="John Doe" />
+                    <Input
+                      value={formData.name}
+                      onChange={(e) => handleInputChange("name", e.target.value)}
+                      maxLength={100}
+                      className={errors.name ? "border-destructive" : ""}
+                    />
+                    {errors.name && (
+                      <p className="text-xs text-destructive flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        {errors.name}
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Email</label>
-                    <Input defaultValue="john@example.com" type="email" />
+                    <Input
+                      value={formData.email}
+                      onChange={(e) => handleInputChange("email", e.target.value)}
+                      type="email"
+                      maxLength={254}
+                      className={errors.email ? "border-destructive" : ""}
+                    />
+                    {errors.email && (
+                      <p className="text-xs text-destructive flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        {errors.email}
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">GitHub Username</label>
@@ -104,7 +196,11 @@ export default function SettingsPage() {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Company</label>
-                    <Input defaultValue="Acme Inc" />
+                    <Input
+                      value={formData.company}
+                      onChange={(e) => handleInputChange("company", e.target.value)}
+                      maxLength={100}
+                    />
                   </div>
                 </div>
 
@@ -250,11 +346,37 @@ export default function SettingsPage() {
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Webhook URL</label>
-                    <Input placeholder="https://your-server.com/webhook" />
+                    <Input
+                      placeholder="https://your-server.com/webhook"
+                      value={formData.webhookUrl}
+                      onChange={(e) => handleInputChange("webhookUrl", e.target.value)}
+                      className={errors.webhookUrl ? "border-destructive" : ""}
+                    />
+                    {errors.webhookUrl && (
+                      <p className="text-xs text-destructive flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        {errors.webhookUrl}
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Secret</label>
-                    <Input type="password" placeholder="Webhook secret" />
+                    <Input
+                      type="password"
+                      placeholder="Webhook secret (min 16 characters)"
+                      value={formData.webhookSecret}
+                      onChange={(e) => handleInputChange("webhookSecret", e.target.value)}
+                      className={errors.webhookSecret ? "border-destructive" : ""}
+                    />
+                    {errors.webhookSecret && (
+                      <p className="text-xs text-destructive flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        {errors.webhookSecret}
+                      </p>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      Used to verify webhook requests. Keep this secret.
+                    </p>
                   </div>
                   <Button variant="outline">Test Webhook</Button>
                 </div>

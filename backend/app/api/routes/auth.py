@@ -1,6 +1,8 @@
 """Authentication routes."""
 
+import logging
 import secrets
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -13,21 +15,58 @@ from app.schemas.user import TokenResponse, UserResponse
 from app.services.auth_service import AuthService
 from app.services.github_service import GitHubService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 # Services
 github_service = GitHubService()
 auth_service = AuthService()
 
-# In-memory state storage (use Redis in production)
-_oauth_states: dict[str, bool] = {}
+# OAuth state storage with TTL (use Redis in production for multi-instance deployments)
+# Format: {state: expiry_timestamp}
+_oauth_states: dict[str, float] = {}
+_OAUTH_STATE_TTL_SECONDS = 600  # 10 minutes
+_MAX_OAUTH_STATES = 1000  # Prevent memory exhaustion
+
+
+def _cleanup_expired_states() -> None:
+    """Remove expired OAuth states to prevent memory leaks."""
+    now = time.time()
+    expired = [state for state, expiry in _oauth_states.items() if expiry < now]
+    for state in expired:
+        del _oauth_states[state]
+
+
+def _add_oauth_state(state: str) -> bool:
+    """Add OAuth state with TTL. Returns False if at capacity."""
+    _cleanup_expired_states()
+    if len(_oauth_states) >= _MAX_OAUTH_STATES:
+        logger.warning("OAuth state storage at capacity, rejecting new state")
+        return False
+    _oauth_states[state] = time.time() + _OAUTH_STATE_TTL_SECONDS
+    return True
+
+
+def _verify_oauth_state(state: str) -> bool:
+    """Verify and consume OAuth state. Returns False if invalid or expired."""
+    _cleanup_expired_states()
+    if state not in _oauth_states:
+        return False
+    del _oauth_states[state]
+    return True
 
 
 @router.get("/github")
 async def github_oauth_redirect(response: Response):
     """Redirect to GitHub OAuth authorization page."""
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = True
+
+    if not _add_oauth_state(state):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable. Please try again.",
+        )
 
     oauth_url = github_service.get_oauth_url(state)
     response.status_code = status.HTTP_302_FOUND
@@ -37,21 +76,20 @@ async def github_oauth_redirect(response: Response):
 
 @router.get("/callback", response_model=TokenResponse)
 async def github_oauth_callback(
-    code: Annotated[str, Query()],
-    state: Annotated[str, Query()],
+    code: Annotated[str, Query(min_length=1, max_length=256)],
+    state: Annotated[str, Query(min_length=1, max_length=256)],
     db: DbSession,
 ):
     """Handle GitHub OAuth callback.
 
     Exchanges code for token, creates/updates user, returns JWT.
     """
-    # Verify state
-    if state not in _oauth_states:
+    # Verify state (also handles expiry and consumption)
+    if not _verify_oauth_state(state):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state",
+            detail="Invalid or expired OAuth state. Please try again.",
         )
-    del _oauth_states[state]
 
     try:
         # Exchange code for token
@@ -92,10 +130,14 @@ async def github_oauth_callback(
             user=UserResponse.model_validate(user),
         )
 
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
+        # Log the actual error for debugging, but don't expose to client
+        logger.exception("OAuth callback failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth failed: {str(e)}",
+            detail="Authentication failed. Please try again.",
         )
 
 

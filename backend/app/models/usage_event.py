@@ -44,7 +44,7 @@ class UsageEvent(Base):
     estimated_cost_micro_cents: Mapped[int] = mapped_column(Integer, default=0)
 
     # Additional metadata
-    metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
+    event_metadata: Mapped[dict] = mapped_column(JSONB, name="metadata", default=dict)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

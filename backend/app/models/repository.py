@@ -4,7 +4,17 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,6 +71,10 @@ class Repository(Base):
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="repositories")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "github_repo_id", name="uq_repos_user_github"),
+    )
 
     @property
     def is_deleted(self) -> bool:

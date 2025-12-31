@@ -34,8 +34,28 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn, formatRelativeTime } from "@/lib/utils";
 
+type IndexStatus = "ready" | "indexing" | "failed" | "pending";
+
+interface Repository {
+  id: string;
+  name: string;
+  fullName: string;
+  owner: string;
+  private: boolean;
+  defaultBranch: string;
+  indexStatus: IndexStatus;
+  lastIndexedAt: Date | null;
+  lastIndexedCommit?: string;
+  fileCount: number;
+  symbolCount: number;
+  routeCount: number;
+  framework: string;
+  indexProgress?: number;
+  indexError?: string;
+}
+
 // Mock data
-const repositories = [
+const repositories: Repository[] = [
   {
     id: "1",
     name: "laravel-app",
@@ -209,7 +229,7 @@ export default function RepositoriesPage() {
 }
 
 interface RepositoryCardProps {
-  repo: typeof repositories[0];
+  repo: Repository;
 }
 
 function RepositoryCard({ repo }: RepositoryCardProps) {

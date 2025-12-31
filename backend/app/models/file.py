@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +32,5 @@ class File(Base):
     last_indexed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
-        # Unique constraint on repo + path
-        {"sqlite_autoincrement": True},
+        UniqueConstraint("repo_id", "path", name="uq_files_repo_path"),
     )

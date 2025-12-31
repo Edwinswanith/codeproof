@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,3 +45,14 @@ class SnippetCache(Base):
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime, default=default_expiry)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "repo_id",
+            "commit_sha",
+            "file_path",
+            "start_line",
+            "end_line",
+            name="uq_snippet_cache_location",
+        ),
+    )

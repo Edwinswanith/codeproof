@@ -470,6 +470,70 @@ class GitHubService:
     # PR Review Posting
     # =========================================================================
 
+    async def get_pr(
+        self,
+        installation_id: int,
+        owner: str,
+        repo: str,
+        pr_number: int,
+    ) -> dict[str, Any]:
+        """Get PR data.
+
+        Args:
+            installation_id: GitHub App installation ID
+            owner: Repository owner
+            repo: Repository name
+            pr_number: PR number
+
+        Returns:
+            PR data
+        """
+        token = await self.get_installation_token(installation_id)
+        url = f"{self.GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def get_pr_files(
+        self,
+        installation_id: int,
+        owner: str,
+        repo: str,
+        pr_number: int,
+    ) -> list[dict[str, Any]]:
+        """Get PR changed files.
+
+        Args:
+            installation_id: GitHub App installation ID
+            owner: Repository owner
+            repo: Repository name
+            pr_number: PR number
+
+        Returns:
+            List of file changes
+        """
+        token = await self.get_installation_token(installation_id)
+        url = f"{self.GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}/files"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def create_pr_review(
         self,
         installation_id: int,

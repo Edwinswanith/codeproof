@@ -42,10 +42,10 @@ class Settings(BaseSettings):
     github_client_secret: str = ""
     github_webhook_secret: str = ""
 
-    # OpenAI
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
-    openai_embedding_model: str = "text-embedding-3-small"
+    # Gemini
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    gemini_embedding_model: str = "text-embedding-004"
 
     # Celery
     celery_broker_url: str = "redis://localhost:6379/1"

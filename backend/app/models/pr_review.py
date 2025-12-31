@@ -3,7 +3,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,3 +54,7 @@ class PRReview(Base):
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint("repo_id", "pr_number", "head_sha", name="uq_pr_reviews_repo_pr_sha"),
+    )

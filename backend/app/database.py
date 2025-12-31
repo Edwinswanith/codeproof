@@ -2,6 +2,7 @@
 
 from typing import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -47,6 +48,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Initialize database tables."""
+    """Initialize database - migrations handled by Alembic.
+    
+    Per V2 architecture: Never use create_all in production.
+    All schema changes must go through Alembic migrations.
+    """
+    # Just verify connection - migrations run separately
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("SELECT 1"))

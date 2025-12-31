@@ -2,7 +2,27 @@
   "permissions": {
     "allow": [
       "Skill(frontend-design)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(security\\): Address critical security vulnerabilities\n\nBackend fixes:\n- Remove insecure default values for SECRET_KEY, JWT_SECRET, DATABASE_URL\n- Add Pydantic validators to enforce secure secret configuration\n- Replace in-memory OAuth state with TTL-based storage \\(prevents memory leak/DoS\\)\n- Add max capacity limit for OAuth states \\(prevents memory exhaustion\\)\n- Sanitize error messages to prevent information disclosure\n- Add input validation \\(min/max length\\) on OAuth code and state parameters\n- Restrict CORS methods and headers \\(was allowing all with credentials\\)\n- Update .env.example with secure defaults and warnings\n\nFrontend fixes:\n- Replace realistic Stripe API key pattern in mock data with obviously fake one\n- Add form validation for profile settings \\(name, email\\)\n- Add URL and secret validation for webhook configuration\n- Display validation errors with proper UI feedback\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(source:*)",
+      "Bash(python -c:*)",
+      "Bash(npm run build:*)",
+      "Bash(timeout 5 uvicorn:*)",
+      "Bash(npm cache clean:*)",
+      "Bash(rm:*)",
+      "Bash(npm install:*)",
+      "Bash(du:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker compose:*)",
+      "Bash(brew services:*)",
+      "Bash(lsof:*)",
+      "Bash(claude extension install --help:*)",
+      "Bash(uvicorn:*)",
+      "Bash(xargs kill -9)",
+      "Bash(cat:*)",
+      "Bash(curl:*)",
+      "Bash(pip install:*)",
+      "Bash(alembic upgrade:*)"
     ]
   }
 }

@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Zap,
   Terminal,
+  FlaskConical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,7 @@ const mainNavItems: NavItem[] = [
   { label: "Ask", href: "/ask", icon: MessageSquareText },
   { label: "PR Reviews", href: "/pr-reviews", icon: GitPullRequest },
   { label: "System Map", href: "/system-map", icon: Map },
+  { label: "Test Mode", href: "/test", icon: FlaskConical },
 ];
 
 const bottomNavItems: NavItem[] = [

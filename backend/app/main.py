@@ -5,12 +5,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, repos, webhooks
+from app.api.routes import auth, pr_reviews, qa, repos, test, webhooks
 from app.config import get_settings
 from app.database import init_db
 
 settings = get_settings()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,21 +29,23 @@ app = FastAPI(
     redoc_url="/redoc" if not settings.is_production else None,
 )
 
-# CORS middleware - restrict methods and headers for security
+# CORS middleware - allow all origins in development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
-    expose_headers=["X-Request-ID"],
-    max_age=600,  # Cache preflight requests for 10 minutes
+    allow_origins=["*"] if not settings.is_production else settings.cors_origins,
+    allow_credentials=False,  # Must be False when using allow_origins=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"],
+    max_age=600,
 )
 
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(repos.router, prefix="/api/repos", tags=["Repositories"])
+app.include_router(qa.router, prefix="/api", tags=["Q&A"])
+app.include_router(pr_reviews.router, prefix="/api/repos", tags=["PR Reviews"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
+app.include_router(test.router, prefix="/test", tags=["Test"])
 
 
 @app.get("/health")

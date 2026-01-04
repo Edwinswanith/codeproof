@@ -16,11 +16,22 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException
 
+from app.config import get_settings
 from app.services.llm_service import LLMService
+
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def get_github_headers() -> dict:
+    """Get GitHub API headers with authentication if available."""
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+    return headers
 
 
 class RepoAnalyzeRequest(BaseModel):
@@ -84,7 +95,7 @@ async def get_repo_default_branch(client: httpx.AsyncClient, owner: str, repo: s
     """Get the default branch of a repo."""
     response = await client.get(
         f"https://api.github.com/repos/{owner}/{repo}",
-        headers={"Accept": "application/vnd.github.v3+json"},
+        headers=get_github_headers(),
     )
     if response.status_code != 200:
         raise HTTPException(status_code=404, detail=f"Repository not found: {owner}/{repo}")
@@ -95,7 +106,7 @@ async def get_repo_tree(client: httpx.AsyncClient, owner: str, repo: str, branch
     """Get the file tree of a repo."""
     response = await client.get(
         f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1",
-        headers={"Accept": "application/vnd.github.v3+json"},
+        headers=get_github_headers(),
     )
     if response.status_code != 200:
         raise HTTPException(status_code=400, detail="Failed to get repo tree")
@@ -104,8 +115,12 @@ async def get_repo_tree(client: httpx.AsyncClient, owner: str, repo: str, branch
 
 async def get_file_content(client: httpx.AsyncClient, owner: str, repo: str, path: str, branch: str) -> str:
     """Get raw file content from GitHub."""
+    headers = {}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
     response = await client.get(
         f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}",
+        headers=headers,
     )
     if response.status_code != 200:
         return ""
@@ -331,3 +346,492 @@ Provide a specific, accurate answer. Reference file paths and line numbers when 
 async def test_health():
     """Health check for test routes."""
     return {"status": "ok", "message": "Test routes are working"}
+
+
+# ============================================================================
+# DEEP ANALYSIS ENDPOINTS
+# ============================================================================
+
+# Cache for analysis contexts (in-memory for demo, use Redis in production)
+analysis_cache: dict[str, "AnalysisContext"] = {}
+
+
+class DeepAnalyzeRequest(BaseModel):
+    """Request for deep analysis."""
+    repo_url: str
+    branch: Optional[str] = None
+    include_embeddings: bool = True
+
+
+class SymbolInfo(BaseModel):
+    """Symbol information."""
+    type: str
+    name: str
+    file_path: str
+    line_start: int
+    line_end: int
+    signature: Optional[str] = None
+
+
+class DeepAnalyzeResponse(BaseModel):
+    """Response from deep analysis."""
+    repo: str
+    branch: str
+    commit_sha: str
+    detected_framework: str
+    files_parsed: int
+    total_symbols: int
+    total_functions: int
+    total_classes: int
+    parse_errors: list[str]
+    findings: list[Finding]
+    critical_count: int
+    warning_count: int
+    info_count: int
+    top_level_symbols: list[SymbolInfo]
+    entry_points: list[SymbolInfo]
+    qa_ready: bool
+    chunks_indexed: int
+
+
+class DeepAskRequest(BaseModel):
+    """Request to ask about a deeply analyzed repo."""
+    repo_url: str
+    question: str
+
+
+class CitedSource(BaseModel):
+    """A source with citation."""
+    index: int
+    file_path: str
+    line_start: int
+    line_end: int
+    symbol_name: Optional[str]
+    code_snippet: str
+    url: str
+
+
+class AnswerSection(BaseModel):
+    """Section of answer with sources."""
+    text: str
+    source_indices: list[int]
+
+
+class DeepAskResponse(BaseModel):
+    """Response with evidence-backed answer."""
+    answer_text: str
+    sections: list[AnswerSection]
+    unknowns: list[str]
+    sources: list[CitedSource]
+    confidence: str
+    call_graph_context: Optional[list[str]] = None
+
+
+@router.post("/deep-analyze", response_model=DeepAnalyzeResponse)
+async def deep_analyze_repo(request: DeepAnalyzeRequest):
+    """
+    Deep analysis: clone, parse AST, build indexes, run analyzers.
+
+    This gives Claude Code-level understanding of the codebase:
+    - Clones repo locally
+    - Parses with tree-sitter (AST)
+    - Builds symbol table, call graph, dependency graph
+    - Runs deterministic security analyzers
+    - Generates embeddings for semantic Q&A
+    """
+    from app.services.deep_analysis_service import DeepAnalysisService
+
+    service = DeepAnalysisService()
+
+    try:
+        result = await service.analyze_repository(
+            repo_url=request.repo_url,
+            branch=request.branch,
+            include_embeddings=request.include_embeddings,
+            token=settings.github_token if settings.github_token else None,
+        )
+
+        # Cache context for follow-up questions
+        cache_key = f"{request.repo_url}:{request.branch or 'default'}"
+        analysis_cache[cache_key] = result["context"]
+
+        # Limit cache size
+        if len(analysis_cache) > 10:
+            oldest_key = next(iter(analysis_cache))
+            old_context = analysis_cache.pop(oldest_key)
+            service.cleanup(old_context)
+
+        return DeepAnalyzeResponse(**result["response"])
+
+    except Exception as e:
+        logger.exception(f"Deep analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deep-ask", response_model=DeepAskResponse)
+async def deep_ask_question(request: DeepAskRequest):
+    """
+    Ask a question using deep code understanding.
+
+    Uses semantic search + symbol table + call graph to find relevant code,
+    then sends to LLM with strict citation requirements.
+
+    Requires /deep-analyze to be called first for the same repo.
+    """
+    from app.services.deep_analysis_service import DeepAnalysisService
+
+    # Find cached context
+    cache_key = f"{request.repo_url}:default"
+    context = None
+
+    # Try to find matching cache
+    for key, ctx in analysis_cache.items():
+        if request.repo_url in key:
+            context = ctx
+            break
+
+    if not context:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository not analyzed. Call /deep-analyze first."
+        )
+
+    service = DeepAnalysisService()
+
+    try:
+        result = await service.answer_question(context, request.question)
+
+        return DeepAskResponse(
+            answer_text=result["answer_text"],
+            sections=[AnswerSection(**s) for s in result.get("sections", [])],
+            unknowns=result.get("unknowns", []),
+            sources=[CitedSource(**s) for s in result.get("sources", [])],
+            confidence=result.get("confidence", "low"),
+            call_graph_context=result.get("call_graph_context"),
+        )
+
+    except Exception as e:
+        logger.exception(f"Deep ask failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/deep-analyze/{cache_key}")
+async def cleanup_analysis(cache_key: str):
+    """Cleanup a cached analysis context."""
+    from app.services.deep_analysis_service import DeepAnalysisService
+
+    if cache_key in analysis_cache:
+        context = analysis_cache.pop(cache_key)
+        service = DeepAnalysisService()
+        service.cleanup(context)
+        return {"status": "cleaned", "key": cache_key}
+
+    return {"status": "not_found", "key": cache_key}
+
+
+@router.get("/deep-analyze/status")
+async def get_analysis_status():
+    """Get status of cached analyses."""
+    return {
+        "cached_analyses": len(analysis_cache),
+        "repos": list(analysis_cache.keys()),
+    }
+
+
+# ============================================================================
+# COMPLIANCE ANALYSIS ENDPOINTS
+# ============================================================================
+
+class ComplianceAnalyzeRequest(BaseModel):
+    """Request for compliance analysis."""
+    repo_url: str
+    region: str  # eu, us, uk, india, australia, canada, brazil, singapore, uae, global
+    sector: str  # healthcare, finance, ecommerce, education, government, saas, social_media, iot, ai_ml, general
+
+
+class RegulationInfo(BaseModel):
+    """Regulation information."""
+    code: str
+    name: str
+    description: str
+    key_requirements: list[str]
+    penalties: str
+    official_url: str
+
+
+class ComplianceFindingInfo(BaseModel):
+    """A compliance finding."""
+    check_id: str
+    regulation: str
+    category: str
+    severity: str
+    title: str
+    description: str
+    file_path: str
+    line_start: int
+    line_end: int
+    code_snippet: str
+    recommendation: str
+    reference_url: str
+
+
+class ComplianceAnalyzeResponse(BaseModel):
+    """Response from compliance analysis."""
+    region: str
+    sector: str
+    applicable_regulations: list[RegulationInfo]
+    findings: list[ComplianceFindingInfo]
+    summary: dict
+    ai_analysis: str
+    recommendations: list[str]
+    compliance_score: float
+    risk_level: str
+
+
+class RegulationResearchRequest(BaseModel):
+    """Request for regulation research."""
+    region: str
+    sector: str
+
+
+class RegulationResearchResponse(BaseModel):
+    """Response with regulation research."""
+    regulations: list[RegulationInfo]
+    research: str
+
+
+@router.post("/compliance/analyze", response_model=ComplianceAnalyzeResponse)
+async def analyze_compliance(request: ComplianceAnalyzeRequest):
+    """
+    Analyze code for regulatory compliance.
+
+    Based on target deployment region and industry sector, checks for:
+    - GDPR, CCPA, HIPAA, PCI-DSS, SOC2, DPDP, LGPD, PDPA compliance
+    - Data privacy requirements
+    - Security standards
+    - Industry-specific regulations
+
+    Requires /deep-analyze to be called first for the same repo.
+    """
+    from app.services.compliance_service import ComplianceService
+
+    # Find cached context
+    context = None
+    for key, ctx in analysis_cache.items():
+        if request.repo_url in key:
+            context = ctx
+            break
+
+    if not context:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository not analyzed. Call /deep-analyze first."
+        )
+
+    service = ComplianceService()
+
+    try:
+        # Get code files from cached context
+        code_files = {}
+        if hasattr(context, 'parse_result') and context.parse_result:
+            # Build code files from symbols
+            for symbol in context.parse_result.symbols:
+                if symbol.body and symbol.file_path not in code_files:
+                    code_files[symbol.file_path] = symbol.body
+
+        # If no code from symbols, try to read from repo path
+        if not code_files and hasattr(context, 'repo_path') and context.repo_path:
+            import os
+            for root, _, files in os.walk(context.repo_path):
+                for file in files:
+                    if file.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.php', '.rb', '.java', '.go')):
+                        file_path = os.path.join(root, file)
+                        rel_path = os.path.relpath(file_path, context.repo_path)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                code_files[rel_path] = f.read()
+                        except Exception:
+                            pass
+
+        # Run compliance analysis
+        report = await service.analyze_compliance(
+            code_files=code_files,
+            region=request.region,
+            sector=request.sector,
+            symbols=context.parse_result.symbols if hasattr(context, 'parse_result') else None,
+        )
+
+        return ComplianceAnalyzeResponse(
+            region=report.region,
+            sector=report.sector,
+            applicable_regulations=[
+                RegulationInfo(
+                    code=r.code,
+                    name=r.name,
+                    description=r.description,
+                    key_requirements=r.key_requirements,
+                    penalties=r.penalties,
+                    official_url=r.official_url,
+                )
+                for r in report.applicable_regulations
+            ],
+            findings=[
+                ComplianceFindingInfo(
+                    check_id=f.check_id,
+                    regulation=f.regulation,
+                    category=f.category,
+                    severity=f.severity,
+                    title=f.title,
+                    description=f.description,
+                    file_path=f.file_path,
+                    line_start=f.line_start,
+                    line_end=f.line_end,
+                    code_snippet=f.code_snippet,
+                    recommendation=f.recommendation,
+                    reference_url=f.reference_url,
+                )
+                for f in report.findings
+            ],
+            summary=report.summary,
+            ai_analysis=report.ai_analysis,
+            recommendations=report.recommendations,
+            compliance_score=report.compliance_score,
+            risk_level=report.risk_level,
+        )
+
+    except Exception as e:
+        logger.exception(f"Compliance analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/compliance/research", response_model=RegulationResearchResponse)
+async def research_regulations(request: RegulationResearchRequest):
+    """
+    Research applicable regulations for a region and sector.
+
+    Uses AI to provide up-to-date information about:
+    - Applicable laws and regulations
+    - Key requirements
+    - Recent updates
+    - Upcoming regulations
+    """
+    from app.services.compliance_service import ComplianceService
+
+    service = ComplianceService()
+
+    try:
+        result = await service.research_regulations(
+            region=request.region,
+            sector=request.sector,
+        )
+
+        return RegulationResearchResponse(
+            regulations=[
+                RegulationInfo(
+                    code=r.code,
+                    name=r.name,
+                    description=r.description,
+                    key_requirements=r.key_requirements,
+                    penalties=r.penalties,
+                    official_url=r.official_url,
+                )
+                for r in result["regulations"]
+            ],
+            research=result["research"],
+        )
+
+    except Exception as e:
+        logger.exception(f"Regulation research failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/compliance/regions")
+async def get_available_regions():
+    """Get list of supported deployment regions."""
+    from app.services.compliance_service import Region
+    return {
+        "regions": [
+            {"code": r.value, "name": r.name.replace("_", " ").title()}
+            for r in Region
+        ]
+    }
+
+
+@router.get("/compliance/sectors")
+async def get_available_sectors():
+    """Get list of supported industry sectors."""
+    from app.services.compliance_service import IndustrySector
+    return {
+        "sectors": [
+            {"code": s.value, "name": s.name.replace("_", " ").title()}
+            for s in IndustrySector
+        ]
+    }
+
+
+# ============================================================================
+# CODEBASE DOCUMENTATION ENDPOINTS
+# ============================================================================
+
+class GenerateDocsRequest(BaseModel):
+    """Request to generate AI-ready documentation."""
+    repo_url: str
+
+
+class GenerateDocsResponse(BaseModel):
+    """Response with generated documentation."""
+    codebase_md: str
+    architecture_md: str
+    symbol_map_md: str
+    ai_context_json: str
+
+
+@router.post("/docs/generate", response_model=GenerateDocsResponse)
+async def generate_codebase_docs(request: GenerateDocsRequest):
+    """
+    Generate AI-ready documentation for a codebase.
+
+    Creates structured documentation that helps AI assistants
+    (Claude Code, Cursor, Copilot) understand and navigate the codebase:
+
+    - CODEBASE.md: High-level overview
+    - ARCHITECTURE.md: System design
+    - SYMBOL_MAP.md: Symbol reference
+    - .ai/context.json: Machine-readable context
+    """
+    from app.services.codebase_doc_service import CodebaseDocService
+
+    # Find cached context
+    context = None
+    for key, ctx in analysis_cache.items():
+        if request.repo_url in key:
+            context = ctx
+            break
+
+    if not context:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository not analyzed. Call /deep-analyze first."
+        )
+
+    service = CodebaseDocService()
+
+    try:
+        docs = service.generate_all_docs(
+            repo_path=context.repo_path if hasattr(context, 'repo_path') else "",
+            repo_url=request.repo_url,
+            parse_result=context.parse_result if hasattr(context, 'parse_result') else None,
+            index=context.index if hasattr(context, 'index') else None,
+            framework=context.detected_framework if hasattr(context, 'detected_framework') else "unknown",
+        )
+
+        return GenerateDocsResponse(
+            codebase_md=docs.get("CODEBASE.md", ""),
+            architecture_md=docs.get("ARCHITECTURE.md", ""),
+            symbol_map_md=docs.get("SYMBOL_MAP.md", ""),
+            ai_context_json=docs.get(".ai/context.json", "{}"),
+        )
+
+    except Exception as e:
+        logger.exception(f"Documentation generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

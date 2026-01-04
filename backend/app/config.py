@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: str = ""
     github_webhook_secret: str = ""
+    github_token: str = ""  # Personal Access Token for API requests
 
     # Gemini
     gemini_api_key: str = ""

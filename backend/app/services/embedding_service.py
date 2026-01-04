@@ -1,17 +1,11 @@
-"""Embedding service for Qdrant vector storage."""
+"""Service for generating and searching code embeddings."""
 
+import asyncio
+import hashlib
 import logging
-from typing import Any
-
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import (
-    Distance,
-    PointStruct,
-    VectorParams,
-    Filter,
-    FieldCondition,
-    MatchValue,
-)
+from dataclasses import dataclass, field
+from typing import Any, Optional
+import numpy as np
 
 from app.config import get_settings
 
@@ -19,145 +13,278 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+@dataclass
+class CodeChunk:
+    """A chunk of code for embedding."""
+    id: str
+    file_path: str
+    line_start: int
+    line_end: int
+    symbol_name: Optional[str]
+    symbol_type: Optional[str]
+    content: str
+    embedding: Optional[list[float]] = None
+
+
 class EmbeddingService:
-    """Service for Qdrant vector operations."""
+    """Service for generating and searching code embeddings."""
+
+    CHUNK_MAX_TOKENS = 500
+    EMBEDDING_DIMENSIONS = 768  # Gemini embedding dimension
+    BATCH_SIZE = 20  # Embed this many chunks at once
 
     def __init__(self, llm_service=None):
-        self.client = AsyncQdrantClient(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key,
-        )
-        self.collection_name = settings.qdrant_collection
-        self.llm_service = llm_service  # Optional, for query string embedding
+        """Initialize embedding service."""
+        self.llm_service = llm_service
+        self.client = None
+        self._init_client()
 
-    async def ensure_collection(self, vector_size: int = 1536) -> None:
-        """Ensure collection exists with correct configuration.
+    def _init_client(self):
+        """Initialize Gemini client for embeddings."""
+        try:
+            from google import genai
+            if settings.gemini_api_key:
+                self.client = genai.Client(api_key=settings.gemini_api_key)
+                logger.info("Initialized Gemini embedding client")
+            else:
+                logger.warning("GEMINI_API_KEY not set, embeddings disabled")
+        except ImportError:
+            logger.warning("google-genai not installed, embeddings disabled")
 
-        Args:
-            vector_size: Size of embedding vectors (1536 for text-embedding-3-small)
-        """
-        collections = await self.client.get_collections()
-        collection_names = [c.name for c in collections.collections]
+    def chunk_code(
+        self,
+        symbols: list,  # list of Symbol from parser_service
+        repo_path: str
+    ) -> list[CodeChunk]:
+        """Create chunks from symbols. Each symbol = one chunk."""
+        chunks = []
 
-        if self.collection_name not in collection_names:
-            await self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=vector_size,
-                    distance=Distance.COSINE,
-                ),
+        for symbol in symbols:
+            # Skip symbols without bodies (just declarations)
+            if not symbol.body and not symbol.docstring:
+                continue
+
+            # Build content for embedding
+            content_parts = []
+            
+            # Add context
+            content_parts.append(f"# File: {symbol.file_path}")
+            content_parts.append(f"# Type: {symbol.type}")
+            if symbol.parent:
+                content_parts.append(f"# Parent: {symbol.parent}")
+            
+            # Add signature if available
+            if symbol.signature:
+                content_parts.append(symbol.signature)
+            
+            # Add docstring if available
+            if symbol.docstring:
+                content_parts.append(f'"""{symbol.docstring}"""')
+            
+            # Add body or truncate if too long
+            if symbol.body:
+                body = symbol.body
+                # Rough token estimate (4 chars per token)
+                if len(body) > self.CHUNK_MAX_TOKENS * 4:
+                    body = body[:self.CHUNK_MAX_TOKENS * 4] + "\n# ... truncated ..."
+                content_parts.append(body)
+
+            content = "\n".join(content_parts)
+            
+            # Generate unique ID
+            chunk_id = hashlib.md5(
+                f"{symbol.file_path}:{symbol.qualified_name}".encode()
+            ).hexdigest()[:12]
+
+            chunks.append(CodeChunk(
+                id=chunk_id,
+                file_path=symbol.file_path,
+                line_start=symbol.line_start,
+                line_end=symbol.line_end,
+                symbol_name=symbol.name,
+                symbol_type=symbol.type,
+                content=content,
+                embedding=None,
+            ))
+
+        logger.info(f"Created {len(chunks)} chunks from {len(symbols)} symbols")
+        return chunks
+
+    async def generate_embeddings(self, chunks: list[CodeChunk]) -> list[CodeChunk]:
+        """Generate embeddings for chunks using Gemini."""
+        if not self.client:
+            logger.warning("Embedding client not initialized, skipping embeddings")
+            return chunks
+
+        total = len(chunks)
+        processed = 0
+
+        # Process in batches
+        for i in range(0, len(chunks), self.BATCH_SIZE):
+            batch = chunks[i:i + self.BATCH_SIZE]
+            texts = [chunk.content for chunk in batch]
+
+            try:
+                # Use Gemini's embedding API
+                embeddings = await self._embed_batch(texts)
+                
+                for chunk, embedding in zip(batch, embeddings):
+                    chunk.embedding = embedding
+                
+                processed += len(batch)
+                logger.info(f"Generated embeddings: {processed}/{total}")
+
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings for batch: {e}")
+                # Continue with other batches
+
+        embedded_count = sum(1 for c in chunks if c.embedding is not None)
+        logger.info(f"Embedded {embedded_count}/{total} chunks")
+        return chunks
+
+    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings for a batch of texts."""
+        try:
+            # Use Gemini embedding model
+            result = await asyncio.to_thread(
+                self.client.models.embed_content,
+                model=settings.gemini_embedding_model,
+                contents=texts,
             )
-            logger.info(f"Created Qdrant collection: {self.collection_name}")
+            
+            # Extract embeddings from result
+            if hasattr(result, 'embeddings'):
+                return [e.values for e in result.embeddings]
+            else:
+                logger.warning(f"Unexpected embedding result format: {type(result)}")
+                return [None] * len(texts)
+                
+        except Exception as e:
+            logger.error(f"Embedding API error: {e}")
+            raise
 
-    async def upsert_points(
+    async def embed_query(self, query: str) -> Optional[list[float]]:
+        """Generate embedding for a search query."""
+        if not self.client:
+            return None
+
+        try:
+            result = await asyncio.to_thread(
+                self.client.models.embed_content,
+                model=settings.gemini_embedding_model,
+                contents=[query],
+            )
+            
+            if hasattr(result, 'embeddings') and result.embeddings:
+                return result.embeddings[0].values
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to embed query: {e}")
+            return None
+
+    def search(
+        self,
+        query: str,
+        chunks: list[CodeChunk],
+        top_k: int = 10,
+        query_embedding: Optional[list[float]] = None
+    ) -> list[tuple[CodeChunk, float]]:
+        """
+        Search chunks by semantic similarity.
+        Returns (chunk, score) pairs sorted by score descending.
+        """
+        if query_embedding is None:
+            # Fall back to keyword search
+            return self._keyword_search(query, chunks, top_k)
+
+        # Filter chunks with embeddings
+        embedded_chunks = [c for c in chunks if c.embedding is not None]
+        if not embedded_chunks:
+            return self._keyword_search(query, chunks, top_k)
+
+        # Calculate cosine similarity
+        scores = []
+        query_vec = np.array(query_embedding)
+        query_norm = np.linalg.norm(query_vec)
+
+        for chunk in embedded_chunks:
+            chunk_vec = np.array(chunk.embedding)
+            chunk_norm = np.linalg.norm(chunk_vec)
+            
+            if query_norm > 0 and chunk_norm > 0:
+                similarity = np.dot(query_vec, chunk_vec) / (query_norm * chunk_norm)
+            else:
+                similarity = 0.0
+            
+            scores.append((chunk, float(similarity)))
+
+        # Sort by score descending
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        return scores[:top_k]
+
+    async def search_repo(
         self,
         repo_id: str,
-        points: list[dict[str, Any]],
-    ) -> None:
-        """Upsert embedding points for a repository.
-
-        Args:
-            repo_id: Repository UUID
-            points: List of point dicts with:
-                - id: Point ID (str)
-                - vector: Embedding vector
-                - payload: Metadata (file_path, start_line, end_line, symbol_id, etc.)
-        """
-        await self.ensure_collection()
-
-        qdrant_points = [
-            PointStruct(
-                id=point["id"],
-                vector=point["vector"],
-                payload={
-                    "repo_id": repo_id,
-                    **point["payload"],
-                },
-            )
-            for point in points
-        ]
-
-        await self.client.upsert(
-            collection_name=self.collection_name,
-            points=qdrant_points,
-        )
-
-    async def search(
-        self,
-        repo_id: str,
-        query: str | list[float],
-        limit: int = 15,
-        score_threshold: float = 0.5,
+        question: str,
+        limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search for similar vectors in a repository.
-
-        Args:
-            repo_id: Repository UUID
-            query: Query string (will be embedded) or query vector
-            limit: Maximum results
-            score_threshold: Minimum similarity score
-
-        Returns:
-            List of results with:
-                - file_path
-                - start_line
-                - end_line
-                - symbol_id (optional)
-                - symbol_name (optional)
-                - score
-        """
-        await self.ensure_collection()
-
-        # If query is a string, create embedding
-        if isinstance(query, str):
-            if not self.llm_service:
-                raise ValueError("LLM service required for query string embedding")
-            query_vector = await self.llm_service.create_embedding(query)
-        else:
-            query_vector = query
-
-        results = await self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_vector,
-            query_filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="repo_id",
-                        match=MatchValue(value=repo_id),
-                    )
-                ]
-            ),
-            limit=limit,
-            score_threshold=score_threshold,
+        """Search embeddings by repo/question. Placeholder for vector store."""
+        logger.warning(
+            "Vector search is not configured for repo_id=%s; returning no results.",
+            repo_id,
         )
+        _ = question, limit
+        return []
 
-        return [
-            {
-                "file_path": hit.payload.get("file_path"),
-                "start_line": hit.payload.get("start_line"),
-                "end_line": hit.payload.get("end_line"),
-                "symbol_id": hit.payload.get("symbol_id"),
-                "symbol_name": hit.payload.get("symbol_name"),
-                "score": hit.score,
-            }
-            for hit in results
-        ]
+    def _keyword_search(
+        self,
+        query: str,
+        chunks: list[CodeChunk],
+        top_k: int
+    ) -> list[tuple[CodeChunk, float]]:
+        """Fallback keyword-based search."""
+        query_words = set(query.lower().split())
+        scores = []
 
-    async def delete_repository(self, repo_id: str) -> None:
-        """Delete all vectors for a repository.
+        for chunk in chunks:
+            content_lower = chunk.content.lower()
+            
+            # Simple scoring: count matching words
+            matches = sum(1 for word in query_words if word in content_lower)
+            
+            # Boost if symbol name matches
+            if chunk.symbol_name and any(
+                word in chunk.symbol_name.lower() for word in query_words
+            ):
+                matches += 2
 
-        Args:
-            repo_id: Repository UUID
-        """
-        await self.client.delete(
-            collection_name=self.collection_name,
-            points_selector=Filter(
-                must=[
-                    FieldCondition(
-                        key="repo_id",
-                        match=MatchValue(value=repo_id),
-                    )
-                ]
-            ),
-        )
+            if matches > 0:
+                score = matches / len(query_words)
+                scores.append((chunk, score))
 
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return scores[:top_k]
+
+    async def search_async(
+        self,
+        query: str,
+        chunks: list[CodeChunk],
+        top_k: int = 10
+    ) -> list[tuple[CodeChunk, float]]:
+        """Async search with query embedding."""
+        query_embedding = await self.embed_query(query)
+        return self.search(query, chunks, top_k, query_embedding)
+
+    def get_similar_chunks(
+        self,
+        chunk: CodeChunk,
+        all_chunks: list[CodeChunk],
+        top_k: int = 5
+    ) -> list[tuple[CodeChunk, float]]:
+        """Find chunks similar to a given chunk."""
+        if not chunk.embedding:
+            return []
+
+        return self.search("", all_chunks, top_k, chunk.embedding)

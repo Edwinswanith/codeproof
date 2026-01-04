@@ -194,7 +194,11 @@ Respond with ONLY the JSON object, no other text:"""
             if not self.embedding_service.llm_service:
                 self.embedding_service.llm_service = self.llm_service
 
-            vector_results = await self.embedding_service.search(repo_id, question, limit=15)
+            vector_results = await self.embedding_service.search_repo(
+                repo_id,
+                question,
+                limit=15,
+            )
             for r in vector_results:
                 key = f"{r['file_path']}:{r['start_line']}"
                 if key not in seen_keys:
@@ -699,4 +703,3 @@ Respond with ONLY the JSON object, no other text:"""
             self.db.add(citation)
 
         await self.db.commit()
-

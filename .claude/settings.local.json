@@ -22,7 +22,13 @@
       "Bash(cat:*)",
       "Bash(curl:*)",
       "Bash(pip install:*)",
-      "Bash(alembic upgrade:*)"
+      "Bash(alembic upgrade:*)",
+      "Bash(~/.zshrc)",
+      "Bash(brew list:*)",
+      "Bash(brew install:*)",
+      "Bash(/opt/homebrew/opt/postgresql@16/bin/createdb:*)",
+      "Bash(/opt/homebrew/opt/postgresql@16/bin/psql:*)",
+      "Bash(timeout 10 uvicorn:*)"
     ]
   }
 }

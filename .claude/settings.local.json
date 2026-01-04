@@ -28,7 +28,9 @@
       "Bash(brew install:*)",
       "Bash(/opt/homebrew/opt/postgresql@16/bin/createdb:*)",
       "Bash(/opt/homebrew/opt/postgresql@16/bin/psql:*)",
-      "Bash(timeout 10 uvicorn:*)"
+      "Bash(timeout 10 uvicorn:*)",
+      "Bash(python -m pytest tests/test_parsers/test_python_parser.py -v)",
+      "Bash(python -m pytest:*)"
     ]
   }
 }

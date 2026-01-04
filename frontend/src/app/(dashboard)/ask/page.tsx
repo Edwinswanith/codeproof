@@ -15,6 +15,7 @@ import {
   Check,
   FileCode2,
   Clock,
+  AlertCircle,
 } from "lucide-react";
 import { PageContainer } from "@/components/layout/dashboard-layout";
 import { PageHeader } from "@/components/layout/header";
@@ -33,13 +34,22 @@ import {
 import { CodeBlock } from "@/components/code-block";
 import { SourceCitation, CitationBadge, type Citation } from "@/components/source-citation";
 import { cn } from "@/lib/utils";
+import { useRepositories, useAskQuestion } from "@/lib/hooks";
+import { AnswerResponse, Citation as ApiCitation } from "@/lib/api";
 
-// Mock repositories
-const repositories = [
-  { id: "1", name: "laravel-app", fullName: "acme/laravel-app" },
-  { id: "2", name: "e-commerce-backend", fullName: "acme/e-commerce-backend" },
-  { id: "3", name: "laravel-api", fullName: "acme/laravel-api" },
-];
+// Transform API citation to UI format
+function transformCitation(citation: ApiCitation, id: string): Citation {
+  return {
+    id,
+    sourceIndex: citation.source_index,
+    filePath: citation.file_path,
+    startLine: citation.start_line,
+    endLine: citation.end_line,
+    snippet: citation.snippet,
+    symbolName: citation.symbol_name || undefined,
+    retrievalSource: "both" as const,
+  };
+}
 
 // Mock conversation
 const mockAnswer = {
@@ -170,24 +180,60 @@ const suggestedQuestions = [
 ];
 
 export default function AskPage() {
-  const [selectedRepo, setSelectedRepo] = React.useState(repositories[0]);
+  // Fetch repositories from API
+  const { data: apiRepos, loading: reposLoading } = useRepositories();
+  const repositories = React.useMemo(() => {
+    if (!apiRepos) return [];
+    return apiRepos.map(repo => ({
+      id: repo.id,
+      name: repo.name,
+      fullName: repo.full_name,
+    }));
+  }, [apiRepos]);
+
+  const [selectedRepo, setSelectedRepo] = React.useState<{ id: string; name: string; fullName: string } | null>(null);
   const [question, setQuestion] = React.useState("");
-  const [isLoading, setIsLoading] = React.useState(false);
-  const [conversation, setConversation] = React.useState<typeof mockAnswer | null>(null);
+  const [conversation, setConversation] = React.useState<{
+    question: string;
+    answerText: string;
+    confidenceTier: "high" | "medium" | "low" | "none";
+    citations: Citation[];
+    unknowns: string[];
+  } | null>(null);
   const [copied, setCopied] = React.useState(false);
   const [feedback, setFeedback] = React.useState<"up" | "down" | null>(null);
 
+  // Q&A hook
+  const { ask, loading: isLoading, error: askError } = useAskQuestion();
+
+  // Set initial repo when repos load
+  React.useEffect(() => {
+    if (repositories.length > 0 && !selectedRepo) {
+      setSelectedRepo(repositories[0]);
+    }
+  }, [repositories, selectedRepo]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!question.trim() || isLoading) return;
+    if (!question.trim() || isLoading || !selectedRepo) return;
 
-    setIsLoading(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 2500));
-    setConversation({ ...mockAnswer, question });
+    const currentQuestion = question;
     setQuestion("");
-    setIsLoading(false);
-    setFeedback(null);
+
+    try {
+      const response = await ask(selectedRepo.id, currentQuestion);
+      setConversation({
+        question: currentQuestion,
+        answerText: response.answer_text,
+        confidenceTier: response.confidence_tier,
+        citations: response.citations.map((c, i) => transformCitation(c, `c${i}`)),
+        unknowns: response.unknowns,
+      });
+      setFeedback(null);
+    } catch (err) {
+      // Error is handled by the hook
+      console.error("Failed to get answer:", err);
+    }
   };
 
   const handleSuggestedQuestion = (q: string) => {
@@ -202,6 +248,32 @@ export default function AskPage() {
     }
   };
 
+  // Show loading if repos are loading
+  if (reposLoading) {
+    return (
+      <PageContainer className="h-[calc(100vh-4rem)]">
+        <div className="flex items-center justify-center h-full">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </PageContainer>
+    );
+  }
+
+  // Show message if no repos
+  if (repositories.length === 0) {
+    return (
+      <PageContainer className="h-[calc(100vh-4rem)]">
+        <div className="flex flex-col items-center justify-center h-full">
+          <FolderGit2 className="h-12 w-12 text-muted-foreground mb-4" />
+          <h2 className="text-xl font-semibold">No Repositories</h2>
+          <p className="text-muted-foreground mt-2">
+            Connect a repository to start asking questions.
+          </p>
+        </div>
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer className="h-[calc(100vh-4rem)]">
       <div className="h-full flex flex-col">
@@ -213,7 +285,7 @@ export default function AskPage() {
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" className="gap-2">
                   <FolderGit2 className="h-4 w-4" />
-                  {selectedRepo.name}
+                  {selectedRepo?.name || "Select repo"}
                   <ChevronDown className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -252,7 +324,7 @@ export default function AskPage() {
                       </div>
                       <Sparkles className="absolute -top-2 -right-2 h-6 w-6 text-accent" />
                     </div>
-                    <h2 className="text-xl font-semibold mt-6">Ask about {selectedRepo.name}</h2>
+                    <h2 className="text-xl font-semibold mt-6">Ask about {selectedRepo?.name || "your codebase"}</h2>
                     <p className="text-muted-foreground mt-2 text-center max-w-md">
                       Ask questions about your codebase and get answers backed by evidence from the actual source code.
                     </p>

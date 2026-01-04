@@ -17,6 +17,8 @@ import {
   Database,
   Clock,
   Filter,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 import { PageContainer, CardGrid } from "@/components/layout/dashboard-layout";
 import { PageHeader } from "@/components/layout/header";
@@ -33,6 +35,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn, formatRelativeTime } from "@/lib/utils";
+import { useRepositories, useDeleteRepository, useTriggerIndex } from "@/lib/hooks";
+import { Repository as ApiRepository } from "@/lib/api";
 
 type IndexStatus = "ready" | "indexing" | "failed" | "pending";
 
@@ -54,69 +58,24 @@ interface Repository {
   indexError?: string;
 }
 
-// Mock data
-const repositories: Repository[] = [
-  {
-    id: "1",
-    name: "laravel-app",
-    fullName: "acme/laravel-app",
-    owner: "acme",
-    private: true,
-    defaultBranch: "main",
-    indexStatus: "ready" as const,
-    lastIndexedAt: new Date(Date.now() - 1000 * 60 * 30),
-    lastIndexedCommit: "a1b2c3d",
-    fileCount: 342,
-    symbolCount: 1847,
-    routeCount: 86,
-    framework: "Laravel 10",
-  },
-  {
-    id: "2",
-    name: "e-commerce-backend",
-    fullName: "acme/e-commerce-backend",
-    owner: "acme",
-    private: true,
-    defaultBranch: "main",
-    indexStatus: "indexing" as const,
-    lastIndexedAt: null,
-    fileCount: 0,
-    symbolCount: 0,
-    routeCount: 0,
-    framework: "Laravel 11",
-    indexProgress: 65,
-  },
-  {
-    id: "3",
-    name: "laravel-api",
-    fullName: "acme/laravel-api",
-    owner: "acme",
-    private: false,
-    defaultBranch: "develop",
-    indexStatus: "ready" as const,
-    lastIndexedAt: new Date(Date.now() - 1000 * 60 * 60 * 2),
-    lastIndexedCommit: "e5f6g7h",
-    fileCount: 128,
-    symbolCount: 634,
-    routeCount: 45,
-    framework: "Laravel 10",
-  },
-  {
-    id: "4",
-    name: "admin-panel",
-    fullName: "acme/admin-panel",
-    owner: "acme",
-    private: true,
-    defaultBranch: "main",
-    indexStatus: "failed" as const,
-    indexError: "Failed to clone repository: Permission denied",
-    lastIndexedAt: null,
-    fileCount: 0,
-    symbolCount: 0,
-    routeCount: 0,
-    framework: "Laravel 10",
-  },
-];
+// Transform API repository to UI format
+function transformRepository(repo: ApiRepository): Repository {
+  return {
+    id: repo.id,
+    name: repo.name,
+    fullName: repo.full_name,
+    owner: repo.owner,
+    private: repo.private,
+    defaultBranch: repo.default_branch,
+    indexStatus: repo.index_status,
+    lastIndexedAt: repo.last_indexed_at ? new Date(repo.last_indexed_at) : null,
+    lastIndexedCommit: repo.last_indexed_commit || undefined,
+    fileCount: repo.file_count,
+    symbolCount: repo.symbol_count,
+    routeCount: repo.route_count,
+    framework: "Python", // Default for now
+  };
+}
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -135,12 +94,57 @@ export default function RepositoriesPage() {
   const [searchQuery, setSearchQuery] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<string | null>(null);
 
+  // Fetch repositories from API
+  const { data: apiRepos, loading, error, refetch } = useRepositories();
+
+  // Transform API data to UI format
+  const repositories = React.useMemo(() => {
+    if (!apiRepos) return [];
+    return apiRepos.map(transformRepository);
+  }, [apiRepos]);
+
   const filteredRepos = repositories.filter((repo) => {
     const matchesSearch = repo.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       repo.fullName.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = !statusFilter || repo.indexStatus === statusFilter;
     return matchesSearch && matchesStatus;
   });
+
+  // Show loading state
+  if (loading) {
+    return (
+      <PageContainer>
+        <PageHeader
+          title="Repositories"
+          description="Manage your connected repositories"
+        />
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </PageContainer>
+    );
+  }
+
+  // Show error state
+  if (error) {
+    return (
+      <PageContainer>
+        <PageHeader
+          title="Repositories"
+          description="Manage your connected repositories"
+        />
+        <div className="flex flex-col items-center justify-center py-12">
+          <AlertCircle className="h-12 w-12 text-critical mb-4" />
+          <h3 className="text-lg font-medium">Failed to load repositories</h3>
+          <p className="text-muted-foreground mt-1">{error.message}</p>
+          <Button variant="outline" className="mt-4" onClick={() => refetch()}>
+            <RefreshCcw className="h-4 w-4 mr-2" />
+            Retry
+          </Button>
+        </div>
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>

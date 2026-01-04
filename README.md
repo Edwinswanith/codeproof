@@ -169,10 +169,21 @@ The API will be available at:
 
 ```bash
 cd frontend
+
+# Install dependencies (if not already done)
+npm install
+
+# Start development server
 npm run dev
 ```
 
 The frontend will be available at http://localhost:3000
+
+**Note**: If you encounter build errors, try clearing the Next.js cache:
+```bash
+rm -rf .next
+npm run dev
+```
 
 ## Project Structure
 
@@ -185,6 +196,7 @@ codeproof/
 │   │   │   └── routes/         # API endpoints
 │   │   ├── models/             # SQLAlchemy database models
 │   │   ├── parsers/            # Code parsers (tree-sitter)
+│   │   │   └── python_parser.py    # Python AST parser
 │   │   ├── schemas/            # Pydantic schemas
 │   │   ├── services/           # Business logic services
 │   │   │   ├── auth_service.py           # Authentication
@@ -203,6 +215,12 @@ codeproof/
 │   │   └── tasks/              # Celery tasks
 │   ├── migrations/             # Alembic database migrations
 │   ├── tests/                  # Test suite
+│   │   ├── test_analyzers/     # Analyzer tests
+│   │   ├── test_api/           # API endpoint tests
+│   │   ├── test_e2e/           # End-to-end tests
+│   │   ├── test_parsers/       # Parser tests
+│   │   ├── test_services/      # Service tests
+│   │   └── conftest.py         # Pytest configuration
 │   ├── docker-compose.yml      # Infrastructure services
 │   ├── Dockerfile              # Backend container
 │   └── pyproject.toml          # Python dependencies

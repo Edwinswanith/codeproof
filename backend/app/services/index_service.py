@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.parser_service import Symbol, Import, FunctionCall, ParseResult
+from app.parsers.python_parser import Symbol, Import, FunctionCall, ParseResult
 
 logger = logging.getLogger(__name__)
 

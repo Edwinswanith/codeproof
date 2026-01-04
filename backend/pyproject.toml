@@ -57,3 +57,22 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = [
+    # Legacy/unused services (not integrated yet)
+    "app/services/clone_service.py",
+    "app/services/codebase_doc_service.py",
+    "app/services/compliance_service.py",
+    "app/services/deep_analysis_service.py",
+    "app/services/parser_service.py",
+    # Test files
+    "tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

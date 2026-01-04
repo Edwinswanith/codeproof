@@ -12,6 +12,14 @@ An AI-powered code review SaaS platform that provides intelligent code analysis,
   - Dependency changes
   - Environment file leaks
   - Private key exposure
+- **Code Parsing & Indexing**: 
+  - Multi-language AST parsing (Python, JavaScript, TypeScript, PHP)
+  - Symbol extraction and indexing (classes, functions, methods)
+  - Dependency graph analysis
+  - Call graph construction for impact analysis
+- **Deep Code Analysis**: Local repository cloning with comprehensive AST-based analysis
+- **Codebase Documentation**: AI-generated documentation for codebases
+- **Compliance Analysis**: Automated compliance checking with regulations and standards
 - **System Maps**: Generate architecture diagrams from routes and models (coming soon)
 - **Vector Search**: Semantic code search powered by embeddings and Qdrant
 - **GitHub Integration**: Secure repository cloning and webhook-based PR reviews
@@ -81,6 +89,7 @@ API_URL=http://localhost:8000
 
 # Database
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/codeproof
+DATABASE_POOL_SIZE=10
 
 # Redis
 REDIS_URL=redis://localhost:6379/0
@@ -146,6 +155,9 @@ alembic upgrade head
 
 # Start development server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# Or on a different port (e.g., 8001)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 The API will be available at:
@@ -175,6 +187,19 @@ codeproof/
 │   │   ├── parsers/            # Code parsers (tree-sitter)
 │   │   ├── schemas/            # Pydantic schemas
 │   │   ├── services/           # Business logic services
+│   │   │   ├── auth_service.py           # Authentication
+│   │   │   ├── clone_service.py          # Secure Git repository cloning
+│   │   │   ├── codebase_doc_service.py   # AI documentation generation
+│   │   │   ├── compliance_service.py     # Compliance analysis
+│   │   │   ├── deep_analysis_service.py  # Deep code analysis
+│   │   │   ├── embedding_service.py      # Vector embeddings
+│   │   │   ├── github_service.py         # GitHub API integration
+│   │   │   ├── index_service.py          # Code indexing and search
+│   │   │   ├── llm_service.py            # LLM integration
+│   │   │   ├── metering_service.py       # Usage tracking
+│   │   │   ├── parser_service.py         # AST code parsing
+│   │   │   ├── qa_service.py             # Q&A with citations
+│   │   │   └── review_service.py         # PR review analysis
 │   │   └── tasks/              # Celery tasks
 │   ├── migrations/             # Alembic database migrations
 │   ├── tests/                  # Test suite
@@ -236,6 +261,27 @@ npm start
 # Linting
 npm run lint
 ```
+
+## Core Services
+
+### Code Analysis Services
+- **ParserService**: Multi-language AST parsing using tree-sitter (Python, JavaScript, TypeScript, PHP)
+- **IndexService**: Builds comprehensive code indexes including symbol tables, dependency graphs, and call graphs
+- **DeepAnalysisService**: Performs deep code analysis with local repository cloning and AST parsing
+- **ReviewService**: High-precision PR review with confidence-based issue detection
+
+### AI & Search Services
+- **LLMService**: Google Gemini integration for code analysis and generation
+- **EmbeddingService**: Vector embedding generation and semantic code search using Qdrant
+- **QAService**: Question-answering with proof-carrying answers and source citations
+
+### Infrastructure Services
+- **CloneService**: Secure Git repository cloning with token sanitization and security controls
+- **GitHubService**: GitHub API integration with secure authentication
+- **CodebaseDocService**: AI-generated documentation for codebases
+- **ComplianceService**: Automated compliance analysis with regulations and standards
+- **MeteringService**: Usage tracking and cost calculation
+- **AuthService**: JWT-based authentication and user management
 
 ## API Endpoints
 

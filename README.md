@@ -179,7 +179,10 @@ npm run dev
 
 The frontend will be available at http://localhost:3000
 
-**Note**: If you encounter build errors, try clearing the Next.js cache:
+**Important Notes**:
+- Make sure the `NEXT_PUBLIC_API_URL` in `.env.local` matches the port where your backend is running (default: `http://localhost:8000`)
+- If you change the backend port, update `.env.local` and restart the Next.js dev server
+- If you encounter build errors, try clearing the Next.js cache:
 ```bash
 rm -rf .next
 npm run dev
@@ -303,12 +306,21 @@ npm run lint
 
 ## API Endpoints
 
+### Main API Routes
 - **Authentication**: `/auth/*`
 - **Repositories**: `/api/repos/*`
 - **Q&A**: `/api/{repo_id}/ask`
 - **PR Reviews**: `/api/repos/{repo_id}/review`
 - **Webhooks**: `/webhooks/github`
 - **Health Check**: `/health`
+
+### Test/Development Routes
+- **Quick Analysis**: `/test/analyze` (POST) - Fast security scanning
+- **Deep Analysis**: `/test/deep-analyze` (POST) - Full AST parsing and analysis
+- **Ask Questions**: `/test/ask` (POST) - Q&A about repositories
+- **Deep Q&A**: `/test/deep-ask` (POST) - Q&A using deep analysis context
+- **Compliance Check**: `/test/compliance/analyze` (POST) - Compliance analysis
+- **Test Health**: `/test/health` (GET) - Test routes health check
 
 See http://localhost:8000/docs for interactive API documentation.
 

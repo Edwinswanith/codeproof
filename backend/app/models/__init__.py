@@ -13,6 +13,18 @@ from app.models.pr_review import PRReview
 from app.models.pr_finding import PRFinding
 from app.models.usage_event import UsageEvent
 from app.models.snippet_cache import SnippetCache
+from app.models.scan import (
+    ScanRun,
+    CoverageSummary,
+    FileSnapshot,
+    EvidenceSnippet,
+    Finding,
+    FindingInstance,
+    TraceGraph,
+    ControlFramework,
+    ControlResult,
+    FixPack,
+)
 
 __all__ = [
     "User",
@@ -28,4 +40,14 @@ __all__ = [
     "PRFinding",
     "UsageEvent",
     "SnippetCache",
+    "ScanRun",
+    "CoverageSummary",
+    "FileSnapshot",
+    "EvidenceSnippet",
+    "Finding",
+    "FindingInstance",
+    "TraceGraph",
+    "ControlFramework",
+    "ControlResult",
+    "FixPack",
 ]

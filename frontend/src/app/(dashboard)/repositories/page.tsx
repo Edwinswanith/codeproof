@@ -250,7 +250,7 @@ function RepositoryCard({ repo }: RepositoryCardProps) {
               <div>
                 <div className="flex items-center gap-2">
                   <Link
-                    href={`/repositories/${repo.id}`}
+                    href={`/repositories/${repo.id}/intelligence`}
                     className="font-semibold hover:text-primary transition-colors"
                   >
                     {repo.name}

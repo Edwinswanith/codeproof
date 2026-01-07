@@ -106,6 +106,7 @@ function StatusBadge({ status, ...props }: { status: string } & React.HTMLAttrib
       case "indexing":
       case "analyzing":
       case "pending":
+      case "degraded":
         return "warning" as const;
       case "failed":
         return "critical" as const;

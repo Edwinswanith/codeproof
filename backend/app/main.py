@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, pr_reviews, qa, repos, test, webhooks
+from app.api.routes import auth, intelligence, pr_reviews, qa, repos, test, webhooks
 from app.config import get_settings
 from app.database import init_db
 
@@ -43,6 +43,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(repos.router, prefix="/api/repos", tags=["Repositories"])
 app.include_router(qa.router, prefix="/api", tags=["Q&A"])
+app.include_router(intelligence.router, prefix="/api", tags=["Repo Intelligence"])
 app.include_router(pr_reviews.router, prefix="/api/repos", tags=["PR Reviews"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
 app.include_router(test.router, prefix="/test", tags=["Test"])

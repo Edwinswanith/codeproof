@@ -55,6 +55,11 @@ class DeepAnalysisService:
         self.embedding_service = EmbeddingService()
         self.analyzer = HighPrecisionAnalyzer()
         self.llm_service = LLMService()
+        from app.services.scoring_service import ScoringService
+        self.scoring_service = ScoringService()
+        from app.services.coverage_service import CoverageService
+        self.coverage_service = CoverageService()
+        self.llm_service = LLMService()
 
     async def analyze_repository(
         self,
@@ -89,9 +94,16 @@ class DeepAnalysisService:
                 token=token,
             )
 
-            # Step 2: Parse all code files
+            # Step 2: Discover files and parse all code files
+            logger.info("Step 2: Discovering files")
+            self.coverage_service.discover_files(repo_path)
             logger.info("Step 2: Parsing code with tree-sitter")
-            parse_result = self.parser_service.parse_repository(repo_path)
+            parse_result = self.parser_service.parse_repository(repo_path, self.coverage_service)
+            
+            # Record analyzer coverage
+            self.coverage_service.record_analyzer_run("SAST")
+            self.coverage_service.record_analyzer_run("secrets")
+            # Dependencies and IaC analyzers would be recorded if they run
 
             # Step 3: Build indexes
             logger.info("Step 3: Building symbol table and graphs")
@@ -99,7 +111,8 @@ class DeepAnalysisService:
 
             # Step 4: Run deterministic analyzers
             logger.info("Step 4: Running deterministic analyzers")
-            findings = self._run_analyzers(repo_path, parse_result)
+            findings, scoring_metadata = self._run_analyzers(repo_path, parse_result)
+            self.coverage_service.record_analyzer_run("secrets")  # High-precision analyzer includes secrets
 
             # Step 5: Generate embeddings (optional)
             chunks = []
@@ -126,6 +139,9 @@ class DeepAnalysisService:
                 detected_framework=framework,
             )
 
+            # Compute coverage report
+            coverage_report = self.coverage_service.compute_coverage()
+            
             # Build response
             owner_repo = self._extract_owner_repo(repo_url)
             top_symbols = self.index_service.get_top_level_symbols(index, limit=10)
@@ -150,10 +166,29 @@ class DeepAnalysisService:
                 "critical_count": critical_count,
                 "warning_count": warning_count,
                 "info_count": info_count,
+                "summary_breakdown": scoring_metadata["summary_breakdown"],
+                "deduplication_stats": {
+                    "total_raw_findings": scoring_metadata["total_raw_findings"],
+                    "unique_findings": scoring_metadata["unique_findings"],
+                    "deduplication_rate": scoring_metadata["deduplication_rate"],
+                    "summary_breakdown": scoring_metadata["summary_breakdown"],
+                },
+                "issue_groups": scoring_metadata["groups"],
                 "top_level_symbols": [self._symbol_to_dict(s) for s in top_symbols[:10]],
                 "entry_points": [self._symbol_to_dict(s) for s in entry_points[:10]],
                 "qa_ready": len(chunks) > 0,
                 "chunks_indexed": len(chunks),
+                "coverage": {
+                    "total_files_discovered": coverage_report.total_files_discovered,
+                    "files_parsed_successfully": coverage_report.files_parsed_successfully,
+                    "files_skipped": coverage_report.files_skipped,
+                    "files_failed_parsing": coverage_report.files_failed_parsing,
+                    "coverage_percentage": coverage_report.coverage_percentage,
+                    "languages_detected": coverage_report.languages_detected,
+                    "analyzer_coverage": coverage_report.analyzer_coverage,
+                    "is_incomplete": coverage_report.is_incomplete,
+                    "incomplete_reason": coverage_report.incomplete_reason,
+                },
             }
 
             return {
@@ -171,9 +206,15 @@ class DeepAnalysisService:
             # Don't cleanup here - let caller handle it after Q&A
             pass
 
-    def _run_analyzers(self, repo_path: str, parse_result: ParseResult) -> list[Finding]:
-        """Run deterministic analyzers on parsed code."""
-        findings = []
+    def _run_analyzers(self, repo_path: str, parse_result: ParseResult) -> tuple[list[Finding], dict]:
+        """Run deterministic analyzers on parsed code.
+        
+        Returns:
+            tuple of (findings list, scoring metadata dict)
+        """
+        from app.analyzers.high_precision_analyzer import Finding as AnalyzerFinding
+        
+        raw_analyzer_findings = []
 
         # Run high-precision analyzer on each file
         for symbol in parse_result.symbols:
@@ -189,39 +230,56 @@ class DeepAnalysisService:
                     content = f.read()
 
                 # Run analyzer
-                raw_findings = self.analyzer.analyze_file(
+                file_findings = self.analyzer.analyze_file(
                     file_path=symbol.file_path,
                     content=content
                 )
-
-                for rf in raw_findings:
-                    # Get code snippet with context
-                    code_snippet = self._get_code_context(content, rf.start_line)
-
-                    findings.append(Finding(
-                        severity=rf.severity.value,
-                        category=rf.category.value,
-                        file_path=rf.file_path,
-                        line_number=rf.start_line,
-                        code_snippet=code_snippet,
-                        reason=rf.evidence.get("reason", rf.evidence.get("pattern", "")),
-                        confidence=rf.evidence.get("confidence", "exact_match"),
-                        suggested_fix=self._get_fix_suggestion(rf.category.value, rf.evidence),
-                    ))
+                raw_analyzer_findings.extend(file_findings)
 
             except Exception as e:
                 logger.warning(f"Analyzer failed for {symbol.file_path}: {e}")
 
-        # Deduplicate findings by file:line
-        seen = set()
-        unique_findings = []
-        for f in findings:
-            key = f"{f.file_path}:{f.line_number}:{f.category}"
-            if key not in seen:
-                seen.add(key)
-                unique_findings.append(f)
+        # Deduplicate and score findings using ScoringService
+        deduplicated = self.scoring_service.deduplicate_findings(raw_analyzer_findings)
+        scored_findings = self.scoring_service.score_findings(deduplicated)
+        groups = self.scoring_service.group_by_issue_type(scored_findings)
+        summary_breakdown = self.scoring_service.create_summary_breakdown(groups)
 
-        return unique_findings
+        # Convert scored findings to local Finding format
+        findings = []
+        for scored in scored_findings:
+            rf = scored.finding
+            code_snippet = rf.evidence.code_snippet or ""
+            
+            findings.append(Finding(
+                severity=rf.severity.value,
+                category=rf.category.value,
+                file_path=rf.file_path,
+                line_number=rf.start_line,
+                code_snippet=code_snippet,
+                reason=rf.evidence.rule_trigger_reason,
+                confidence=scored.confidence.level,  # Use scored confidence level
+                suggested_fix=self._get_fix_suggestion(rf.category.value, rf.evidence),
+            ))
+
+        # Build scoring metadata
+        scoring_metadata = {
+            "total_raw_findings": len(raw_analyzer_findings),
+            "unique_findings": len(scored_findings),
+            "deduplication_rate": len(scored_findings) / len(raw_analyzer_findings) if raw_analyzer_findings else 0,
+            "summary_breakdown": summary_breakdown,
+            "groups": {
+                key: {
+                    "rule_id": group.rule_id,
+                    "category": group.category,
+                    "count": group.unique_count,
+                    "description": group.description,
+                }
+                for key, group in groups.items()
+            }
+        }
+
+        return findings, scoring_metadata
 
     def _get_code_context(self, content: str, line_num: int, context_lines: int = 3) -> str:
         """Extract code snippet with context around a specific line."""

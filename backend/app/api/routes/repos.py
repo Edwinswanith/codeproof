@@ -190,9 +190,9 @@ async def trigger_indexing(
     repo.index_error = None
     await db.commit()
 
-    # TODO: Trigger Celery task for async indexing
-    # from app.tasks.index_repo import index_repository
-    # index_repository.delay(str(repo.id))
+    # Trigger Celery task for async indexing
+    from app.tasks.index_repo import index_repository
+    index_repository.delay(str(repo.id))
 
     return IndexStatusResponse(
         status="pending",

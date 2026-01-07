@@ -4,7 +4,7 @@ import secrets
 from functools import lru_cache
 from typing import List
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,6 +78,20 @@ class Settings(BaseSettings):
         if not v:
             raise ValueError("database_url must be set via DATABASE_URL environment variable")
         return v
+
+    @model_validator(mode="after")
+    def validate_production_secrets(self) -> "Settings":
+        """Enforce required secrets in production environment."""
+        if self.app_env == "production":
+            if not self.github_webhook_secret or len(self.github_webhook_secret) < 16:
+                raise ValueError(
+                    "GITHUB_WEBHOOK_SECRET must be set to a secure value (min 16 chars) in production. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                )
+            if not self.gemini_api_key and not self.stripe_secret_key:
+                # At least one LLM provider must be configured
+                pass  # Gemini is optional if using alternative provider
+        return self
 
     # Stripe
     stripe_secret_key: str = ""

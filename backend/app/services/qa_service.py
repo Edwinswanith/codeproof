@@ -42,11 +42,21 @@ class RetrievedSource:
 
 
 @dataclass
+class QuotedSpan:
+    """A quoted span from source code that supports a claim."""
+
+    source_id: int
+    quoted_text: str  # Exact text from source
+    verified: bool = False  # True if quote was found in source
+
+
+@dataclass
 class AnswerSection:
-    """A section of the answer with its sources."""
+    """A section of the answer with its sources and evidence."""
 
     text: str
     source_ids: list[int]
+    quoted_spans: list[QuotedSpan] = field(default_factory=list)
 
 
 @dataclass
@@ -79,21 +89,30 @@ class QAService:
 
 CRITICAL RULES:
 1. You MUST output valid JSON matching the schema below
-2. Every claim MUST reference at least one source_id
-3. If you cannot answer part of the question, put it in "unknowns"
-4. Do NOT invent file paths or line numbers
-5. Do NOT make claims without source evidence
+2. Every claim MUST reference at least one source_id AND include a quoted_span
+3. The quoted_span MUST be an EXACT substring from the source code (copy-paste, no modifications)
+4. If you cannot find exact evidence, put the question in "unknowns"
+5. Do NOT invent file paths, line numbers, or quotes
+6. Do NOT paraphrase code - quote it exactly
 
 OUTPUT SCHEMA:
 {{
     "sections": [
-        {{"text": "The authentication flow starts in...", "source_ids": [1, 3]}},
-        {{"text": "Passwords are hashed using bcrypt...", "source_ids": [2]}}
+        {{
+            "text": "The UserController handles user authentication by calling the AuthService.",
+            "source_ids": [1, 3],
+            "quoted_spans": [
+                {{"source_id": 1, "quote": "class UserController"}},
+                {{"source_id": 3, "quote": "$this->authService->authenticate($credentials)"}}
+            ]
+        }}
     ],
     "unknowns": [
         "I could not find where password reset emails are sent"
     ]
 }}
+
+IMPORTANT: Each quoted_span.quote must be a verbatim substring that appears in the corresponding source. I will verify these quotes exist.
 
 SOURCES:
 {{sources}}
@@ -113,6 +132,8 @@ Respond with ONLY the JSON object, no other text:"""
         self.embedding_service = embedding_service
         self.llm_service = llm_service
         self.github_service = github_service
+        from app.services.claim_validator import ClaimValidator
+        self.claim_validator = ClaimValidator()
 
     async def answer_question(
         self,
@@ -284,45 +305,100 @@ Respond with ONLY the JSON object, no other text:"""
         ]
 
     def _extract_keywords(self, query: str) -> list[str]:
-        """Extract meaningful keywords from query."""
-        # Remove common words
+        """Extract meaningful keywords from query with code-aware tokenization.
+
+        Preserves:
+        - camelCase tokens (split into parts but keep original)
+        - snake_case tokens (split into parts but keep original)
+        - ALLCAPS tokens (API, JWT, etc.)
+        - Digits in tokens (OAuth2, v2, S3)
+        - Special symbols (__init__, ::, /)
+        - File paths (app/Http/Controllers)
+        """
         stopwords = {
-            "the",
-            "a",
-            "an",
-            "is",
-            "are",
-            "was",
-            "were",
-            "be",
-            "been",
-            "how",
-            "what",
-            "where",
-            "when",
-            "why",
-            "which",
-            "who",
-            "does",
-            "do",
-            "did",
-            "has",
-            "have",
-            "had",
-            "in",
-            "on",
-            "at",
-            "to",
-            "for",
-            "of",
-            "with",
-            "by",
+            "the", "a", "an", "is", "are", "was", "were", "be", "been",
+            "how", "what", "where", "when", "why", "which", "who",
+            "does", "do", "did", "has", "have", "had",
+            "in", "on", "at", "to", "for", "of", "with", "by",
+            "can", "could", "would", "should", "will",
+            "this", "that", "these", "those", "it", "its",
+            "and", "or", "but", "if", "then", "else",
+            "my", "your", "our", "their", "i", "you", "we", "they",
         }
 
-        words = re.findall(r"\b\w+\b", query.lower())
-        keywords = [w for w in words if w not in stopwords and len(w) > 2]
+        keywords = []
+        seen = set()
 
-        return keywords[:5]
+        def add_keyword(kw: str) -> None:
+            """Add keyword if valid and not seen."""
+            if kw and kw.lower() not in stopwords and kw not in seen:
+                # Keep ALLCAPS as-is, otherwise lowercase for matching
+                seen.add(kw)
+                keywords.append(kw)
+
+        # Extract file paths (e.g., app/Http/Controllers/UserController.php)
+        file_paths = re.findall(r'[\w./\\-]+\.(?:php|py|js|ts|tsx|jsx|java|go|rs|rb)', query)
+        for path in file_paths:
+            add_keyword(path)
+            # Also extract the filename without extension
+            filename = path.split('/')[-1].split('\\')[-1].rsplit('.', 1)[0]
+            add_keyword(filename)
+
+        # Extract qualified names (e.g., AuthService::login, App\Models\User)
+        qualified = re.findall(r'\b[\w]+(?:(?:::|\.|\\)[\w]+)+\b', query)
+        for q in qualified:
+            add_keyword(q)
+            # Also extract individual parts
+            parts = re.split(r'::|\\|\.', q)
+            for part in parts:
+                if len(part) > 1:
+                    add_keyword(part)
+
+        # Extract special Python/Ruby dunders (__init__, __call__, etc.)
+        dunders = re.findall(r'__\w+__', query)
+        for d in dunders:
+            add_keyword(d)
+
+        # Extract tokens with digits (OAuth2, S3, v2, etc.) - preserve as-is
+        alphanumeric = re.findall(r'\b[A-Za-z]+\d+\w*\b|\b\d+[A-Za-z]+\w*\b', query)
+        for an in alphanumeric:
+            add_keyword(an)
+
+        # Extract ALLCAPS tokens (API, JWT, HTTP, etc.)
+        allcaps = re.findall(r'\b[A-Z]{2,}\b', query)
+        for ac in allcaps:
+            add_keyword(ac)
+
+        # Extract camelCase and PascalCase - keep original AND split parts
+        camel_pattern = re.findall(r'\b[a-z]+(?:[A-Z][a-z]+)+\b|\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b', query)
+        for camel in camel_pattern:
+            add_keyword(camel)
+            # Split camelCase into parts
+            parts = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\d|\W|$)', camel)
+            for part in parts:
+                if len(part) > 2:
+                    add_keyword(part)
+
+        # Extract snake_case - keep original AND split parts
+        snake_pattern = re.findall(r'\b\w+(?:_\w+)+\b', query)
+        for snake in snake_pattern:
+            add_keyword(snake)
+            parts = snake.split('_')
+            for part in parts:
+                if len(part) > 2:
+                    add_keyword(part)
+
+        # Extract remaining meaningful words (not already captured)
+        remaining = re.findall(r'\b[A-Za-z][A-Za-z0-9]*\b', query)
+        for word in remaining:
+            if len(word) > 2:
+                add_keyword(word)
+
+        # Prioritize: keep all keywords but limit total for query efficiency
+        # Sort by length (longer = more specific) then alphabetically
+        keywords.sort(key=lambda k: (-len(k), k.lower()))
+
+        return keywords[:10]  # Allow more keywords for better recall
 
     async def _fetch_snippets(
         self,
@@ -422,14 +498,29 @@ Respond with ONLY the JSON object, no other text:"""
             parsed = self._parse_answer_json(response)
 
         if not parsed:
+            # Return degraded evidence-only response instead of "nothing"
+            # This allows users to still see retrieved sources
+            logger.warning("JSON parsing failed, returning evidence-only response")
             return (
                 ValidatedAnswer(
-                    sections=[],
-                    unknowns=["Failed to generate structured answer"],
+                    sections=[
+                        AnswerSection(
+                            text=(
+                                "I found relevant code but couldn't structure a complete answer. "
+                                "Please review the cited sources directly."
+                            ),
+                            source_ids=[s.index for s in sources[:3]],  # Top 3 sources
+                            quoted_spans=[],  # No verified quotes
+                        )
+                    ],
+                    unknowns=[
+                        "Answer generation failed - showing raw sources",
+                        "Please review the citations manually",
+                    ],
                     confidence_tier=ConfidenceTier.NONE,
-                    confidence_factors={},
+                    confidence_factors={"degraded_mode": True, "parse_failed": True},
                     validation_passed=False,
-                    validation_errors=["JSON parsing failed"],
+                    validation_errors=["JSON parsing failed - evidence-only mode"],
                 ),
                 usage,
             )
@@ -439,36 +530,119 @@ Respond with ONLY the JSON object, no other text:"""
         return validated, usage
 
     def _parse_answer_json(self, response: str) -> dict[str, Any] | None:
-        """Parse JSON from LLM response."""
-        # Try direct parse
+        """Parse JSON from LLM response with multiple repair strategies.
+
+        Handles:
+        - Direct JSON
+        - JSON in markdown code blocks
+        - JSON with trailing commas
+        - JSON with explanation text before/after
+        - Truncated JSON (attempts repair)
+        """
+        # Strategy 1: Direct parse
         try:
             return json.loads(response)
         except json.JSONDecodeError:
             pass
 
-        # Try to extract JSON from response
-        json_match = re.search(r"\{[\s\S]*\}", response)
-        if json_match:
+        # Strategy 2: Extract from markdown code block
+        code_block_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
+        if code_block_match:
             try:
-                return json.loads(json_match.group())
+                return json.loads(code_block_match.group(1))
             except json.JSONDecodeError:
                 pass
 
+        # Strategy 3: Find JSON object in response (greedy)
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            json_str = json_match.group()
+
+            # Try direct parse
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+
+            # Strategy 4: Repair common issues
+            repaired = self._repair_json(json_str)
+            if repaired:
+                try:
+                    return json.loads(repaired)
+                except json.JSONDecodeError:
+                    pass
+
+        # Strategy 5: Try to find last complete JSON object (for truncated responses)
+        # Look for balanced braces
+        brace_count = 0
+        last_complete_end = -1
+        start_idx = response.find('{')
+
+        if start_idx >= 0:
+            for i, char in enumerate(response[start_idx:], start_idx):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        last_complete_end = i + 1
+                        break
+
+            if last_complete_end > start_idx:
+                try:
+                    return json.loads(response[start_idx:last_complete_end])
+                except json.JSONDecodeError:
+                    repaired = self._repair_json(response[start_idx:last_complete_end])
+                    if repaired:
+                        try:
+                            return json.loads(repaired)
+                        except json.JSONDecodeError:
+                            pass
+
+        logger.warning("All JSON parsing strategies failed")
         return None
+
+    def _repair_json(self, json_str: str) -> str | None:
+        """Attempt to repair common JSON issues."""
+        try:
+            repaired = json_str
+
+            # Remove trailing commas before ] or }
+            repaired = re.sub(r',\s*([\]}])', r'\1', repaired)
+
+            # Fix unquoted keys (simple cases)
+            repaired = re.sub(r'(\{|,)\s*(\w+)\s*:', r'\1"\2":', repaired)
+
+            # Remove control characters
+            repaired = re.sub(r'[\x00-\x1f]', '', repaired)
+
+            # Fix single quotes to double quotes (risky but sometimes needed)
+            # Only if no double quotes present in values
+            if "'" in repaired and '"' not in repaired:
+                repaired = repaired.replace("'", '"')
+
+            return repaired
+        except Exception:
+            return None
 
     def _validate_answer(
         self,
         parsed: dict[str, Any],
         sources: list[RetrievedSource],
     ) -> ValidatedAnswer:
-        """Validate the parsed answer."""
+        """Validate the parsed answer with claim-to-evidence verification."""
         errors = []
         valid_source_ids = {s.index for s in sources}
+        source_by_id = {s.index: s for s in sources}
 
         sections = []
+        total_quotes = 0
+        verified_quotes = 0
+
         for i, section_data in enumerate(parsed.get("sections", [])):
             text = section_data.get("text", "")
             source_ids = section_data.get("source_ids", [])
+            raw_quotes = section_data.get("quoted_spans", [])
 
             if not text:
                 errors.append(f"Section {i} has no text")
@@ -482,47 +656,161 @@ Respond with ONLY the JSON object, no other text:"""
             invalid_ids = [sid for sid in source_ids if sid not in valid_source_ids]
             if invalid_ids:
                 errors.append(f"Section {i} references invalid source_ids: {invalid_ids}")
-                # Remove invalid IDs but keep valid ones
                 source_ids = [sid for sid in source_ids if sid in valid_source_ids]
 
-            if source_ids:  # Only add if we have valid sources
-                sections.append(AnswerSection(text=text, source_ids=source_ids))
+            if not source_ids:
+                continue
+
+            # Validate quoted spans - THIS IS THE CRITICAL VERIFICATION
+            verified_spans = []
+            for quote_data in raw_quotes:
+                quote_source_id = quote_data.get("source_id")
+                quote_text = quote_data.get("quote", "")
+
+                if not quote_text or not quote_source_id:
+                    continue
+
+                total_quotes += 1
+
+                if quote_source_id not in source_by_id:
+                    errors.append(f"Section {i}: quote references invalid source {quote_source_id}")
+                    continue
+
+                # CRITICAL: Verify the quote actually exists in the source using ClaimValidator
+                source = source_by_id[quote_source_id]
+                # Use ClaimValidator for verification
+                quote_verified = self.claim_validator.verify_quote_in_source(quote_text, source.content)
+
+                verified_spans.append(
+                    QuotedSpan(
+                        source_id=quote_source_id,
+                        quoted_text=quote_text,
+                        verified=quote_verified,
+                    )
+                )
+
+                if quote_verified:
+                    verified_quotes += 1
+                else:
+                    errors.append(
+                        f"Section {i}: quote '{quote_text[:50]}...' not found in source {quote_source_id}"
+                    )
+
+            # Section is only valid if it has at least one verified quote
+            has_verified_evidence = any(span.verified for span in verified_spans)
+
+            if not raw_quotes:
+                # No quotes provided - section lacks evidence
+                errors.append(f"Section {i} has no quoted_spans - claims not verifiable")
+                # Still include but mark as unverified
+                sections.append(
+                    AnswerSection(
+                        text=text,
+                        source_ids=source_ids,
+                        quoted_spans=[],
+                    )
+                )
+            elif has_verified_evidence:
+                sections.append(
+                    AnswerSection(
+                        text=text,
+                        source_ids=source_ids,
+                        quoted_spans=verified_spans,
+                    )
+                )
+            else:
+                # Has quotes but none verified - reject section
+                errors.append(f"Section {i}: no quotes could be verified - rejecting section")
 
         unknowns = parsed.get("unknowns", [])
 
-        # Calculate confidence
-        confidence_tier, confidence_factors = self._calculate_confidence(sections, sources)
+        # Calculate confidence with quote verification stats
+        confidence_tier, confidence_factors = self._calculate_confidence(
+            sections, sources, total_quotes, verified_quotes
+        )
 
         return ValidatedAnswer(
             sections=sections,
             unknowns=unknowns,
             confidence_tier=confidence_tier,
             confidence_factors=confidence_factors,
-            validation_passed=len(errors) == 0,
+            validation_passed=len(errors) == 0 and verified_quotes > 0,
             validation_errors=errors,
         )
+
+    def _verify_quote_in_source(self, quote: str, source_content: str) -> bool:
+        """Verify that a quote exists in the source content.
+
+        Uses fuzzy matching to handle minor whitespace differences.
+        """
+        if not quote or not source_content:
+            return False
+
+        # Normalize whitespace for comparison
+        def normalize(s: str) -> str:
+            return " ".join(s.split())
+
+        normalized_quote = normalize(quote)
+        normalized_source = normalize(source_content)
+
+        # Exact match (normalized)
+        if normalized_quote in normalized_source:
+            return True
+
+        # Try case-insensitive match
+        if normalized_quote.lower() in normalized_source.lower():
+            return True
+
+        # Try without leading/trailing quotes
+        stripped_quote = quote.strip("'\"` ")
+        if stripped_quote and stripped_quote in source_content:
+            return True
+
+        return False
 
     def _calculate_confidence(
         self,
         sections: list[AnswerSection],
         sources: list[RetrievedSource],
+        total_quotes: int = 0,
+        verified_quotes: int = 0,
     ) -> tuple[ConfidenceTier, dict[str, Any]]:
-        """Calculate confidence tier based on evidence coverage."""
+        """Calculate confidence tier based on evidence quality, not just count.
+
+        Scoring factors:
+        - Quote verification rate (critical)
+        - Retrieval score distribution (higher scores = more relevant)
+        - Source diversity (multiple files)
+        - Sections with verified evidence
+        """
         if not sections:
             return ConfidenceTier.NONE, {"reason": "no_sections"}
 
         # Collect all cited source IDs
         cited_ids = set()
+        verified_section_count = 0
+
         for section in sections:
             cited_ids.update(section.source_ids)
+            # Count sections with at least one verified quote
+            if any(span.verified for span in section.quoted_spans):
+                verified_section_count += 1
 
         # Get cited sources
         cited_sources = [s for s in sources if s.index in cited_ids]
+        if not cited_sources:
+            return ConfidenceTier.NONE, {"reason": "no_cited_sources"}
 
-        # Count unique files
+        # Calculate metrics
         unique_files = len(set(s.file_path for s in cited_sources))
+        avg_score = sum(s.score for s in cited_sources) / len(cited_sources)
+        max_score = max(s.score for s in cited_sources)
+        min_score = min(s.score for s in cited_sources)
 
-        # Check for entrypoints (routes, controllers for Laravel)
+        # Quote verification rate (0.0 to 1.0)
+        verification_rate = verified_quotes / total_quotes if total_quotes > 0 else 0.0
+
+        # Check for entrypoints (routes, controllers)
         has_entrypoints = any(
             "controller" in s.file_path.lower() or "route" in s.file_path.lower()
             for s in cited_sources
@@ -533,31 +821,82 @@ Respond with ONLY the JSON object, no other text:"""
             "unique_files": unique_files,
             "has_entrypoints": has_entrypoints,
             "section_count": len(sections),
+            "verified_section_count": verified_section_count,
+            "total_quotes": total_quotes,
+            "verified_quotes": verified_quotes,
+            "verification_rate": round(verification_rate, 2),
+            "avg_retrieval_score": round(avg_score, 3),
+            "max_retrieval_score": round(max_score, 3),
+            "min_retrieval_score": round(min_score, 3),
         }
 
-        # Determine tier
-        if len(cited_ids) >= 3 and unique_files >= 2:
-            return ConfidenceTier.HIGH, factors
-        elif len(cited_ids) >= 2:
-            return ConfidenceTier.MEDIUM, factors
-        elif len(cited_ids) >= 1:
-            return ConfidenceTier.LOW, factors
-        else:
+        # CONFIDENCE SCORING RULES:
+        #
+        # NONE: No verified evidence
+        # LOW:  Some evidence but weak verification or low retrieval scores
+        # MEDIUM: Good verification rate with decent retrieval quality
+        # HIGH: Strong verification + multiple verified sources from multiple files
+
+        # Rule 1: Must have at least one verified quote for any confidence
+        if verified_quotes == 0:
+            factors["reason"] = "no_verified_quotes"
             return ConfidenceTier.NONE, factors
 
+        # Rule 2: Verification rate must be >= 50% for MEDIUM, >= 75% for HIGH
+        if verification_rate < 0.5:
+            factors["reason"] = "low_verification_rate"
+            return ConfidenceTier.LOW, factors
+
+        # Rule 3: Need multiple verified sections from multiple files for HIGH
+        if (
+            verified_section_count >= 2
+            and unique_files >= 2
+            and verification_rate >= 0.75
+            and avg_score >= 0.5
+        ):
+            factors["reason"] = "strong_multi_source_evidence"
+            return ConfidenceTier.HIGH, factors
+
+        # Rule 4: Good verification with decent retrieval for MEDIUM
+        if verification_rate >= 0.5 and verified_section_count >= 1:
+            # Penalize if retrieval scores are weak
+            if avg_score < 0.3:
+                factors["reason"] = "weak_retrieval_scores"
+                return ConfidenceTier.LOW, factors
+            factors["reason"] = "good_verification_moderate_coverage"
+            return ConfidenceTier.MEDIUM, factors
+
+        # Default to LOW
+        factors["reason"] = "default_low_confidence"
+        return ConfidenceTier.LOW, factors
+
     def _format_answer_text(self, validated: ValidatedAnswer) -> str:
-        """Format validated answer as readable text."""
+        """Format validated answer as readable text with evidence quality indicators."""
         parts = []
 
         for section in validated.sections:
             # Add source references
             refs = ", ".join(f"[{sid}]" for sid in section.source_ids)
-            parts.append(f"{section.text} {refs}")
+
+            # Add verification status
+            verified_count = sum(1 for span in section.quoted_spans if span.verified)
+            total_spans = len(section.quoted_spans)
+
+            if total_spans > 0:
+                verification_indicator = f" ✓{verified_count}/{total_spans}"
+            else:
+                verification_indicator = " ⚠️unverified"
+
+            parts.append(f"{section.text} {refs}{verification_indicator}")
 
         if validated.unknowns:
             parts.append("\n**Could not determine:**")
             for unknown in validated.unknowns:
                 parts.append(f"- {unknown}")
+
+        # Add confidence explanation
+        if validated.confidence_factors.get("reason"):
+            parts.append(f"\n_Confidence: {validated.confidence_tier.value} ({validated.confidence_factors['reason']})_")
 
         return "\n\n".join(parts)
 
@@ -669,15 +1008,30 @@ Respond with ONLY the JSON object, no other text:"""
         citations: list[dict[str, Any]],
         usage: dict[str, int],
     ) -> None:
-        """Store answer in database."""
+        """Store answer in database with full evidence chain."""
+        # Serialize sections with quoted spans
+        serialized_sections = []
+        for s in validated.sections:
+            section_data = {
+                "text": s.text,
+                "source_ids": s.source_ids,
+                "quoted_spans": [
+                    {
+                        "source_id": span.source_id,
+                        "quoted_text": span.quoted_text,
+                        "verified": span.verified,
+                    }
+                    for span in s.quoted_spans
+                ],
+            }
+            serialized_sections.append(section_data)
+
         answer = Answer(
             repo_id=repo_id,
             user_id=user_id,
             question=question,
             answer_text=self._format_answer_text(validated),
-            answer_sections=[
-                {"text": s.text, "source_ids": s.source_ids} for s in validated.sections
-            ],
+            answer_sections=serialized_sections,
             unknowns=validated.unknowns,
             confidence_tier=validated.confidence_tier.value,
             confidence_factors=validated.confidence_factors,

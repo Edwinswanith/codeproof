@@ -142,26 +142,43 @@ class EmbeddingService:
         logger.info(f"Embedded {embedded_count}/{total} chunks")
         return chunks
 
-    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a batch of texts."""
-        try:
-            # Use Gemini embedding model
-            result = await asyncio.to_thread(
-                self.client.models.embed_content,
-                model=settings.gemini_embedding_model,
-                contents=texts,
-            )
-            
-            # Extract embeddings from result
-            if hasattr(result, 'embeddings'):
-                return [e.values for e in result.embeddings]
-            else:
-                logger.warning(f"Unexpected embedding result format: {type(result)}")
-                return [None] * len(texts)
-                
-        except Exception as e:
-            logger.error(f"Embedding API error: {e}")
-            raise
+    async def _embed_batch(self, texts: list[str], max_retries: int = 3) -> list[list[float]]:
+        """Generate embeddings for a batch of texts with retry logic."""
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                # Use Gemini embedding model
+                result = await asyncio.to_thread(
+                    self.client.models.embed_content,
+                    model=settings.gemini_embedding_model,
+                    contents=texts,
+                )
+
+                # Extract embeddings from result
+                if hasattr(result, 'embeddings'):
+                    return [e.values for e in result.embeddings]
+                else:
+                    logger.warning(f"Unexpected embedding result format: {type(result)}")
+                    return [None] * len(texts)
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Embedding API error (attempt {attempt + 1}/{max_retries}): {e}")
+
+                # Check if retryable (500 errors, rate limits)
+                error_str = str(e).lower()
+                is_retryable = any(x in error_str for x in ["500", "503", "429", "rate", "internal", "overloaded"])
+
+                if is_retryable and attempt < max_retries - 1:
+                    delay = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.info(f"Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                elif not is_retryable:
+                    raise
+
+        logger.error(f"Embedding failed after {max_retries} retries: {last_error}")
+        raise last_error
 
     async def embed_query(self, query: str) -> Optional[list[float]]:
         """Generate embedding for a search query."""

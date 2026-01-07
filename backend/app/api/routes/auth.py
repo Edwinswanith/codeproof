@@ -2,20 +2,22 @@
 
 import logging
 import secrets
-import time
 from typing import Annotated
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbSession
+from app.config import get_settings
 from app.models.user import User
 from app.schemas.user import TokenResponse, UserResponse
 from app.services.auth_service import AuthService
 from app.services.github_service import GitHubService
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter()
 
@@ -23,38 +25,48 @@ router = APIRouter()
 github_service = GitHubService()
 auth_service = AuthService()
 
-# OAuth state storage with TTL (use Redis in production for multi-instance deployments)
-# Format: {state: expiry_timestamp}
-_oauth_states: dict[str, float] = {}
+# Redis client for OAuth state (lazy initialized)
+_redis_client: redis.Redis | None = None
 _OAUTH_STATE_TTL_SECONDS = 600  # 10 minutes
-_MAX_OAUTH_STATES = 1000  # Prevent memory exhaustion
+_OAUTH_STATE_PREFIX = "oauth_state:"
 
 
-def _cleanup_expired_states() -> None:
-    """Remove expired OAuth states to prevent memory leaks."""
-    now = time.time()
-    expired = [state for state, expiry in _oauth_states.items() if expiry < now]
-    for state in expired:
-        del _oauth_states[state]
+async def _get_redis() -> redis.Redis:
+    """Get or create Redis client for OAuth state storage."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+        )
+    return _redis_client
 
 
-def _add_oauth_state(state: str) -> bool:
-    """Add OAuth state with TTL. Returns False if at capacity."""
-    _cleanup_expired_states()
-    if len(_oauth_states) >= _MAX_OAUTH_STATES:
-        logger.warning("OAuth state storage at capacity, rejecting new state")
+async def _add_oauth_state(state: str) -> bool:
+    """Add OAuth state with TTL in Redis. Returns False on failure."""
+    try:
+        client = await _get_redis()
+        key = f"{_OAUTH_STATE_PREFIX}{state}"
+        # SET with NX (only if not exists) and EX (expiry)
+        result = await client.set(key, "1", ex=_OAUTH_STATE_TTL_SECONDS, nx=True)
+        return result is not None
+    except redis.RedisError as e:
+        logger.error(f"Redis error adding OAuth state: {e}")
         return False
-    _oauth_states[state] = time.time() + _OAUTH_STATE_TTL_SECONDS
-    return True
 
 
-def _verify_oauth_state(state: str) -> bool:
-    """Verify and consume OAuth state. Returns False if invalid or expired."""
-    _cleanup_expired_states()
-    if state not in _oauth_states:
+async def _verify_oauth_state(state: str) -> bool:
+    """Verify and consume OAuth state from Redis. Returns False if invalid or expired."""
+    try:
+        client = await _get_redis()
+        key = f"{_OAUTH_STATE_PREFIX}{state}"
+        # GETDEL atomically gets and deletes - prevents replay attacks
+        result = await client.getdel(key)
+        return result is not None
+    except redis.RedisError as e:
+        logger.error(f"Redis error verifying OAuth state: {e}")
         return False
-    del _oauth_states[state]
-    return True
 
 
 @router.get("/github")
@@ -62,7 +74,7 @@ async def github_oauth_redirect(response: Response):
     """Redirect to GitHub OAuth authorization page."""
     state = secrets.token_urlsafe(32)
 
-    if not _add_oauth_state(state):
+    if not await _add_oauth_state(state):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Service temporarily unavailable. Please try again.",
@@ -85,7 +97,7 @@ async def github_oauth_callback(
     Exchanges code for token, creates/updates user, returns JWT.
     """
     # Verify state (also handles expiry and consumption)
-    if not _verify_oauth_state(state):
+    if not await _verify_oauth_state(state):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired OAuth state. Please try again.",

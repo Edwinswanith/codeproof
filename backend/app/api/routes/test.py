@@ -40,16 +40,31 @@ class RepoAnalyzeRequest(BaseModel):
     branch: Optional[str] = None
 
 
+class EvidenceInfo(BaseModel):
+    """Structured evidence for a finding."""
+    file_path: str
+    start_line: int
+    end_line: int
+    code_snippet: str
+    rule_name: str
+    rule_trigger_reason: str
+    pattern_matched: Optional[str] = None
+    context_lines: Optional[str] = None
+
+
 class Finding(BaseModel):
-    """A specific, evidence-based finding."""
+    """A specific, evidence-based finding with structured evidence."""
     severity: str  # critical, warning, info
     category: str
     file_path: str
     line_number: int
     code_snippet: str  # Actual code from the file
     reason: str  # Specific reason, not generic
-    confidence: str  # exact_match, structural, pattern
+    confidence: str  # high/medium/low (from confidence scoring)
     suggested_fix: Optional[str] = None
+    rule_id: Optional[str] = None  # Rule that triggered this finding
+    data_types: Optional[list[str]] = None  # Data types involved
+    evidence: Optional[EvidenceInfo] = None  # Structured evidence
 
 
 class RepoAnalyzeResponse(BaseModel):
@@ -202,7 +217,8 @@ async def analyze_repo(request: RepoAnalyzeRequest):
 
                 # Convert to our Finding format with ACTUAL code snippets
                 for f in raw_findings:
-                    code_snippet = get_code_context(content, f.start_line)
+                    # Use evidence.code_snippet if available, otherwise extract context
+                    code_snippet = f.evidence.code_snippet or get_code_context(content, f.start_line)
 
                     findings.append(Finding(
                         severity=f.severity.value,
@@ -210,8 +226,8 @@ async def analyze_repo(request: RepoAnalyzeRequest):
                         file_path=f.file_path,
                         line_number=f.start_line,
                         code_snippet=code_snippet,
-                        reason=f.evidence.get("reason", f.evidence.get("pattern", "")),
-                        confidence=f.evidence.get("confidence", "exact_match"),
+                        reason=f.evidence.rule_trigger_reason,
+                        confidence="exact_match",  # Will be enhanced with confidence scoring
                         suggested_fix=get_fix_suggestion(f.category.value, f.evidence),
                     ))
 
@@ -257,14 +273,24 @@ async def analyze_repo(request: RepoAnalyzeRequest):
         )
 
 
-def get_fix_suggestion(category: str, evidence: dict) -> str:
+def get_fix_suggestion(category: str, evidence) -> str:
     """Get specific fix suggestion based on category."""
+    # Handle both Evidence dataclass and dict (for backwards compatibility)
+    if hasattr(evidence, 'rule_name'):
+        # Evidence dataclass
+        rule_name = evidence.rule_name
+        pattern_matched = evidence.pattern_matched or ""
+    else:
+        # dict (backwards compatibility)
+        rule_name = evidence.get('pattern', evidence.get('name', 'issue'))
+        pattern_matched = evidence.get('pattern', '')
+    
     fixes = {
-        "secret_exposure": f"Remove the {evidence.get('pattern', 'secret')} from code. Use environment variables instead. Rotate this credential immediately as it may be compromised.",
+        "secret_exposure": f"Remove the {rule_name} from code. Use environment variables instead. Rotate this credential immediately as it may be compromised.",
         "private_key_exposed": "Remove private key from repository. Store in secure vault (HashiCorp Vault, AWS Secrets Manager). Regenerate the key as it's now compromised.",
         "env_leaked": "Remove .env file from repository. Add .env to .gitignore. Rotate any credentials that were exposed.",
-        "migration_destructive": f"Review this {evidence.get('operation', 'destructive operation')}. Ensure you have a backup strategy. Consider a reversible migration instead.",
-        "auth_middleware_removed": f"Verify this route should be public. The '{evidence.get('middleware', 'auth')}' middleware was explicitly removed.",
+        "migration_destructive": f"Review this {rule_name}. Ensure you have a backup strategy. Consider a reversible migration instead.",
+        "auth_middleware_removed": f"Verify this route should be public. The authentication middleware was explicitly removed.",
         "dependency_changed": "Review dependency changes for security implications. Run `npm audit` or equivalent for your package manager.",
     }
     return fixes.get(category, "Review this finding and address if applicable.")
@@ -373,8 +399,37 @@ class SymbolInfo(BaseModel):
     signature: Optional[str] = None
 
 
+class CoverageInfo(BaseModel):
+    """Coverage tracking information."""
+    total_files_discovered: int
+    files_parsed_successfully: int
+    files_skipped: dict[str, int]
+    files_failed_parsing: int
+    coverage_percentage: float
+    languages_detected: dict[str, int]
+    analyzer_coverage: dict[str, bool]
+    is_incomplete: bool
+    incomplete_reason: Optional[str] = None
+
+
+class ScoringInfo(BaseModel):
+    """Scoring and deduplication information."""
+    total_raw_findings: int
+    unique_findings: int
+    deduplication_rate: float
+    summary_breakdown: str
+
+
+class IssueGroup(BaseModel):
+    """Grouped issue information."""
+    rule_id: str
+    category: str
+    count: int
+    description: str
+
+
 class DeepAnalyzeResponse(BaseModel):
-    """Response from deep analysis."""
+    """Response from deep analysis with coverage, scoring, and evidence."""
     repo: str
     branch: str
     commit_sha: str
@@ -388,6 +443,10 @@ class DeepAnalyzeResponse(BaseModel):
     critical_count: int
     warning_count: int
     info_count: int
+    summary_breakdown: str  # Human-readable summary of unique issues
+    deduplication_stats: ScoringInfo
+    issue_groups: dict[str, IssueGroup]  # Grouped by rule_id:category
+    coverage: CoverageInfo
     top_level_symbols: list[SymbolInfo]
     entry_points: list[SymbolInfo]
     qa_ready: bool
@@ -401,7 +460,7 @@ class DeepAskRequest(BaseModel):
 
 
 class CitedSource(BaseModel):
-    """A source with citation."""
+    """A source with citation and validation status."""
     index: int
     file_path: str
     line_start: int
@@ -409,6 +468,7 @@ class CitedSource(BaseModel):
     symbol_name: Optional[str]
     code_snippet: str
     url: str
+    validation_status: Optional[str] = None  # verified | unverified | failed
 
 
 class AnswerSection(BaseModel):
@@ -418,13 +478,15 @@ class AnswerSection(BaseModel):
 
 
 class DeepAskResponse(BaseModel):
-    """Response with evidence-backed answer."""
+    """Response with evidence-backed answer and validation status."""
     answer_text: str
     sections: list[AnswerSection]
     unknowns: list[str]
     sources: list[CitedSource]
     confidence: str
     call_graph_context: Optional[list[str]] = None
+    validation_status: Optional[str] = None  # verified | partially_verified | failed
+    unsupported_claims: Optional[list[str]] = None  # Claims that couldn't be verified
 
 
 @router.post("/deep-analyze", response_model=DeepAnalyzeResponse)

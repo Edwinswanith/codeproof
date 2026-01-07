@@ -30,7 +30,22 @@
       "Bash(/opt/homebrew/opt/postgresql@16/bin/psql:*)",
       "Bash(timeout 10 uvicorn:*)",
       "Bash(python -m pytest tests/test_parsers/test_python_parser.py -v)",
-      "Bash(python -m pytest:*)"
+      "Bash(python -m pytest:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(docker ps:*)",
+      "Bash(redis-cli ping:*)",
+      "Bash(/opt/homebrew/opt/postgresql@15/bin/psql:*)",
+      "Bash(ls:*)",
+      "Bash(pip show:*)",
+      "Bash(poetry run python:*)",
+      "Bash(poetry install:*)",
+      "Bash(poetry lock:*)",
+      "Bash(poetry add:*)",
+      "Bash(./qdrant:*)",
+      "Bash(poetry run alembic:*)",
+      "Bash(tar:*)"
     ]
   }
 }

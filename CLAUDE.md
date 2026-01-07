@@ -31,11 +31,15 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 # Run tests
 pytest
 pytest tests/path/to/test.py::test_name  # single test
+pytest --cov                              # with coverage
 
 # Linting/formatting
 black .
 ruff check .
 mypy .
+
+# Create new migration
+alembic revision --autogenerate -m "description"
 ```
 
 ### Frontend (Next.js)
@@ -89,10 +93,13 @@ RULE: LLM never detects. LLM never invents file paths or line numbers.
   - `qa_service.py`: Proof-carrying answer generation with citation validation
   - `review_service.py`: PR analysis using high-precision analyzer
   - `embedding_service.py`: Qdrant vector storage/search
-  - `llm_service.py`: OpenAI integration with usage tracking
+  - `llm_service.py`: Gemini (primary) / OpenAI (fallback) with usage tracking
   - `metering_service.py`: Cost tracking per operation
   - `github_service.py`: GitHub API + secure ASKPASS cloning
   - `auth_service.py`: JWT authentication
+  - `index_service.py`: Repository indexing and search
+  - `clone_service.py`: Secure Git repository cloning
+  - `parser_service.py`: Tree-sitter multi-language parsing
 - **`analyzers/high_precision_analyzer.py`**: 6 high-confidence detectors
 - **`api/routes/`**: FastAPI routers (auth, repos, qa, pr_reviews, webhooks)
 - **`parsers/`**: Tree-sitter based parsers (not yet implemented)
@@ -106,7 +113,8 @@ RULE: LLM never detects. LLM never invents file paths or line numbers.
   - `ui/`: Shadcn/ui primitives (Button, Card, Dialog, etc.)
   - `layout/`: Dashboard layout, Sidebar, Header
   - `code-block.tsx`, `finding-card.tsx`, `source-citation.tsx`: Domain components
-- **`lib/utils.ts`**: Utility functions (cn for classnames)
+- **`lib/utils.ts`**: Utility functions (cn, formatRelativeTime, getSeverityColor)
+- **`lib/api.ts`**: Typed API client (repositoryApi, qaApi, authApi, healthApi)
 
 ### API Endpoints
 
@@ -157,7 +165,25 @@ Required in `backend/.env`:
 SECRET_KEY=<32+ char secure string>
 JWT_SECRET=<32+ char secure string>
 DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
-OPENAI_API_KEY=<your key>
+GEMINI_API_KEY=<your key>
 GITHUB_CLIENT_ID=<oauth app>
 GITHUB_CLIENT_SECRET=<oauth app>
 ```
+
+Optional:
+```env
+OPENAI_API_KEY=<fallback LLM>
+QDRANT_URL=http://localhost:6333
+REDIS_URL=redis://localhost:6379/0
+```
+
+## Testing
+
+Test structure mirrors app structure:
+- `tests/test_analyzers/` - Analyzer tests
+- `tests/test_api/` - API endpoint tests
+- `tests/test_services/` - Service unit tests
+- `tests/test_parsers/` - Parser tests
+- `tests/test_e2e/` - End-to-end tests
+
+Coverage excludes legacy services not yet integrated (clone_service, codebase_doc_service, compliance_service, deep_analysis_service, parser_service).

@@ -117,8 +117,13 @@ class ParserService:
             except Exception as e:
                 logger.warning(f"Failed to initialize tree-sitter: {e}")
 
-    def parse_repository(self, repo_path: str) -> ParseResult:
-        """Parse all code files in repository."""
+    def parse_repository(self, repo_path: str, coverage_service=None) -> ParseResult:
+        """Parse all code files in repository.
+        
+        Args:
+            repo_path: Path to repository
+            coverage_service: Optional CoverageService to track coverage
+        """
         result = ParseResult()
         
         for root, dirs, files in os.walk(repo_path):
@@ -126,16 +131,36 @@ class ParserService:
             dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
             
             for filename in files:
+                file_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(file_path, repo_path)
+                
+                # Check file size for coverage tracking
+                file_size = None
+                if coverage_service:
+                    try:
+                        file_size = os.path.getsize(file_path)
+                    except OSError:
+                        pass
+                
+                # Check if file should be skipped
+                skip_reason = None
+                if coverage_service:
+                    skip_reason = coverage_service.should_skip_file(rel_path, file_size)
+                    if skip_reason:
+                        coverage_service.record_file_skipped(rel_path, skip_reason)
+                        continue
+                
                 # Skip unwanted files
                 if any(filename.endswith(skip) for skip in self.SKIP_FILES):
+                    if coverage_service:
+                        coverage_service.record_file_skipped(rel_path, "minified_or_bundle")
                     continue
                 
                 ext = os.path.splitext(filename)[1].lower()
                 if ext not in self.SUPPORTED_LANGUAGES:
+                    if coverage_service and not skip_reason:
+                        coverage_service.record_file_skipped(rel_path, "unsupported_language")
                     continue
-                
-                file_path = os.path.join(root, filename)
-                rel_path = os.path.relpath(file_path, repo_path)
                 
                 try:
                     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -149,8 +174,14 @@ class ParserService:
                     result.calls.extend(calls)
                     result.files_parsed += 1
                     
+                    if coverage_service:
+                        coverage_service.record_file_parsed(rel_path, language)
+                    
                 except Exception as e:
-                    result.parse_errors.append(f"{rel_path}: {str(e)}")
+                    error_msg = f"{rel_path}: {str(e)}"
+                    result.parse_errors.append(error_msg)
+                    if coverage_service:
+                        coverage_service.record_parse_error(rel_path, str(e))
         
         logger.info(
             f"Parsed {result.files_parsed} files: "

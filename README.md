@@ -4,6 +4,8 @@ An AI-powered code review SaaS platform that provides intelligent code analysis,
 
 ## Features
 
+### Core Capabilities
+
 - **Q&A with Citations**: Ask questions about your codebase and get proof-carrying answers with exact source references
 - **PR Analysis**: High-precision PR review that flags only confident issues including:
   - Secret exposure (GitHub PAT, AWS, Stripe, Slack, etc.)
@@ -23,6 +25,43 @@ An AI-powered code review SaaS platform that provides intelligent code analysis,
 - **System Maps**: Generate architecture diagrams from routes and models (coming soon)
 - **Vector Search**: Semantic code search powered by embeddings and Qdrant
 - **GitHub Integration**: Secure repository cloning and webhook-based PR reviews
+
+### Trust & Evidence Foundation
+
+CodeProof ensures all findings and claims are backed by hard evidence:
+
+- **Hard Evidence for All Findings**: Every finding includes structured evidence with:
+  - Exact file path and line numbers
+  - Code snippet with context (3-5 lines)
+  - Rule trigger reason explaining why the issue was detected
+  - Pattern matched and rule identifier
+  - Data types involved (PII, credentials, etc.)
+
+- **Explainable Scoring with Deduplication**:
+  - Automatic deduplication of findings (groups similar issues)
+  - Impact scoring based on data sensitivity, flow width, and regulatory impact
+  - Exploitability scoring (authentication requirements, network exposure, attack complexity)
+  - Confidence scoring (high/medium/low) with clear explanations
+  - Grouped breakdowns showing unique issues with counts
+
+- **Coverage Tracking**:
+  - Tracks files discovered, parsed, skipped (with reasons), and failed
+  - Calculates coverage percentage and identifies incomplete scans
+  - Tracks which analyzers ran (SAST, secrets, dependencies, IaC)
+  - Language detection and parse error reporting
+  - Warns if coverage is below 80%
+
+- **Claim Validation for Q&A**:
+  - Verifies that all quoted code spans in answers actually exist in cited files
+  - Validates citations match the source code
+  - Marks answers as verified, partially verified, or failed
+  - Removes or flags unsupported claims
+  - Provides validation status for each citation
+
+- **Speculative Finding Handling**:
+  - Auto-downgrades findings without complete evidence to INFO severity
+  - Prevents false positives from weak evidence
+  - Clear indication when evidence is incomplete
 
 ## Tech Stack
 
@@ -203,9 +242,11 @@ codeproof/
 │   │   ├── schemas/            # Pydantic schemas
 │   │   ├── services/           # Business logic services
 │   │   │   ├── auth_service.py           # Authentication
+│   │   │   ├── claim_validator.py        # Q&A claim validation
 │   │   │   ├── clone_service.py          # Secure Git repository cloning
 │   │   │   ├── codebase_doc_service.py   # AI documentation generation
 │   │   │   ├── compliance_service.py     # Compliance analysis
+│   │   │   ├── coverage_service.py       # Coverage tracking
 │   │   │   ├── deep_analysis_service.py  # Deep code analysis
 │   │   │   ├── embedding_service.py      # Vector embeddings
 │   │   │   ├── github_service.py         # GitHub API integration
@@ -214,7 +255,8 @@ codeproof/
 │   │   │   ├── metering_service.py       # Usage tracking
 │   │   │   ├── parser_service.py         # AST code parsing
 │   │   │   ├── qa_service.py             # Q&A with citations
-│   │   │   └── review_service.py         # PR review analysis
+│   │   │   ├── review_service.py         # PR review analysis
+│   │   │   └── scoring_service.py        # Finding scoring and deduplication
 │   │   └── tasks/              # Celery tasks
 │   ├── migrations/             # Alembic database migrations
 │   ├── tests/                  # Test suite
@@ -286,15 +328,18 @@ npm run lint
 ## Core Services
 
 ### Code Analysis Services
-- **ParserService**: Multi-language AST parsing using tree-sitter (Python, JavaScript, TypeScript, PHP)
+- **ParserService**: Multi-language AST parsing using tree-sitter (Python, JavaScript, TypeScript, PHP) with coverage tracking
 - **IndexService**: Builds comprehensive code indexes including symbol tables, dependency graphs, and call graphs
-- **DeepAnalysisService**: Performs deep code analysis with local repository cloning and AST parsing
+- **DeepAnalysisService**: Performs deep code analysis with local repository cloning, AST parsing, and integrated scoring
 - **ReviewService**: High-precision PR review with confidence-based issue detection
+- **ScoringService**: Deduplication, impact scoring, exploitability scoring, and confidence scoring for findings
+- **CoverageService**: Tracks file discovery, parsing success/failure, skip reasons, and analyzer coverage
 
 ### AI & Search Services
 - **LLMService**: Google Gemini integration for code analysis and generation
 - **EmbeddingService**: Vector embedding generation and semantic code search using Qdrant
 - **QAService**: Question-answering with proof-carrying answers and source citations
+- **ClaimValidator**: Validates that quoted code spans in Q&A answers actually exist in cited files
 
 ### Infrastructure Services
 - **CloneService**: Secure Git repository cloning with token sanitization and security controls
@@ -316,9 +361,16 @@ npm run lint
 
 ### Test/Development Routes
 - **Quick Analysis**: `/test/analyze` (POST) - Fast security scanning
-- **Deep Analysis**: `/test/deep-analyze` (POST) - Full AST parsing and analysis
+- **Deep Analysis**: `/test/deep-analyze` (POST) - Full AST parsing and analysis with:
+  - Structured evidence for all findings
+  - Deduplication statistics and grouped issue breakdowns
+  - Coverage report (files discovered, parsed, skipped, coverage percentage)
+  - Analyzer coverage tracking
 - **Ask Questions**: `/test/ask` (POST) - Q&A about repositories
-- **Deep Q&A**: `/test/deep-ask` (POST) - Q&A using deep analysis context
+- **Deep Q&A**: `/test/deep-ask` (POST) - Q&A using deep analysis context with:
+  - Claim validation status
+  - Verified citations
+  - Unsupported claims list
 - **Compliance Check**: `/test/compliance/analyze` (POST) - Compliance analysis
 - **Test Health**: `/test/health` (GET) - Test routes health check
 
@@ -352,9 +404,23 @@ See http://localhost:8000/docs for interactive API documentation.
 
 See `backend/app/config.py` for all available environment variables and their descriptions.
 
+## Recent Updates
+
+### Trust & Evidence Foundation (Phase 1) ✅
+
+The platform now includes comprehensive trust and evidence capabilities:
+
+- **Structured Evidence**: All findings include complete evidence with file paths, line numbers, code snippets, and rule trigger reasons
+- **Explainable Scoring**: Every finding includes impact, exploitability, and confidence scores with clear explanations
+- **Smart Deduplication**: Automatic grouping of similar findings with unique issue counts
+- **Coverage Tracking**: Complete visibility into what was scanned, what was skipped, and coverage percentage
+- **Claim Validation**: Q&A answers verify that all quoted code actually exists in cited files
+
+This ensures that every finding is backed by hard evidence and every score is explainable, making CodeProof a trustworthy code analysis platform.
+
 ## Status
 
-This project is in active development. See [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for detailed implementation status.
+This project is in active development. The Trust & Evidence Foundation (Phase 1) has been completed. See [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for detailed implementation status.
 
 ## License
 
